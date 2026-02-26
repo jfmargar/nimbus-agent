@@ -105,7 +105,7 @@ struct EnvAssembler {
         if trimmedWhisper.isEmpty {
             env.removeValue(forKey: "AIPAL_WHISPER_CMD")
         } else {
-            env["AIPAL_WHISPER_CMD"] = trimmedWhisper
+            env["AIPAL_WHISPER_CMD"] = ShellResolver.resolveCommandPath(trimmedWhisper) ?? ShellResolver.expandHome(trimmedWhisper)
         }
 
         env["AIPAL_SCRIPT_TIMEOUT_MS"] = String(settings.scriptTimeoutMs)

@@ -1,6 +1,15 @@
 import Foundation
 
 enum ShellResolver {
+    private static var userPaths: [String] {
+        let home = NSHomeDirectory()
+        return [
+            "\(home)/.local/bin",
+            "\(home)/.nvm/versions/node/current/bin",
+            "\(home)/.cargo/bin"
+        ]
+    }
+
     private static let commonPaths = [
         "/opt/homebrew/bin",
         "/usr/local/bin",
@@ -11,22 +20,45 @@ enum ShellResolver {
     ]
 
     static func resolveCommandPath(_ command: String) -> String? {
-        if let found = searchInPath(command, pathValue: ProcessInfo.processInfo.environment["PATH"] ?? "") {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        // If user provides an explicit path (absolute or relative), resolve it directly.
+        if trimmed.contains("/") {
+            let expanded = expandHome(trimmed)
+            let absolute = expanded.hasPrefix("/")
+                ? expanded
+                : URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                    .appendingPathComponent(expanded)
+                    .path
+            return FileManager.default.isExecutableFile(atPath: absolute) ? absolute : nil
+        }
+
+        if let found = searchInPath(trimmed, pathValue: ProcessInfo.processInfo.environment["PATH"] ?? "") {
             return found
         }
 
-        if let shellFound = runShellCommand(["-lc", "command -v \(command)"]) {
+        if let shellFound = runShellCommand(["-ilc", "command -v \(trimmed)"]) {
             return shellFound
         }
 
-        return searchInPath(command, pathValue: commonPaths.joined(separator: ":"))
+        if let shellFound = runShellCommand(["-lc", "command -v \(trimmed)"]) {
+            return shellFound
+        }
+
+        return searchInPath(trimmed, pathValue: (userPaths + commonPaths).joined(separator: ":"))
     }
 
     static func mergedPathValue() -> String {
         let current = splitPath(ProcessInfo.processInfo.environment["PATH"] ?? "")
-        let shellPath = splitPath(runShellCommand(["-lc", "echo -n $PATH"]) ?? "")
-        let merged = deduplicate(current + shellPath + commonPaths)
+        let shellInteractive = splitPath(runShellCommand(["-ilc", "echo -n $PATH"]) ?? "")
+        let shellLogin = splitPath(runShellCommand(["-lc", "echo -n $PATH"]) ?? "")
+        let merged = deduplicate(current + shellInteractive + shellLogin + userPaths + commonPaths)
         return merged.joined(separator: ":")
+    }
+
+    static func expandHome(_ value: String) -> String {
+        NSString(string: value).expandingTildeInPath
     }
 
     private static func runShellCommand(_ args: [String]) -> String? {
@@ -57,7 +89,8 @@ enum ShellResolver {
     private static func searchInPath(_ command: String, pathValue: String) -> String? {
         let fm = FileManager.default
         for directory in splitPath(pathValue) {
-            let candidate = URL(fileURLWithPath: directory, isDirectory: true)
+            let expanded = expandHome(directory)
+            let candidate = URL(fileURLWithPath: expanded, isDirectory: true)
                 .appendingPathComponent(command, isDirectory: false)
                 .path
             if fm.isExecutableFile(atPath: candidate) {
@@ -71,6 +104,7 @@ enum ShellResolver {
         value
             .split(separator: ":")
             .map(String.init)
+            .map(expandHome)
             .filter { !$0.isEmpty }
     }
 

@@ -55,6 +55,15 @@ final class PreflightService {
             errors.append("No se encontró `codex` en PATH. Si lo tienes instalado, reinicia Nimbus o verifica tu PATH en zsh.")
         }
 
+        let whisperCommand = settings.whisperCmd.trimmingCharacters(in: .whitespacesAndNewlines)
+        if whisperCommand.isEmpty {
+            warnings.append("AIPAL_WHISPER_CMD está vacío; se usará el valor por defecto de Aipal.")
+        } else if let whisperPath = ShellResolver.resolveCommandPath(whisperCommand) {
+            details.append("whisper cmd: \(whisperPath)")
+        } else {
+            warnings.append("No se encontró \(whisperCommand) en PATH. La transcripción de audio puede fallar.")
+        }
+
         if settings.allowedUsers.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             warnings.append("ALLOWED_USERS está vacío: el bot quedará abierto a cualquier usuario de Telegram.")
         }
