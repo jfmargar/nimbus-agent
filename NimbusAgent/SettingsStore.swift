@@ -90,6 +90,13 @@ struct EnvAssembler {
         var env = ProcessInfo.processInfo.environment
 
         env["PATH"] = ShellResolver.mergedPathValue()
+        if env["HOME"]?.isEmpty ?? true {
+            env["HOME"] = NSHomeDirectory()
+        }
+        if env["CODEX_HOME"]?.isEmpty ?? true {
+            let home = env["HOME"] ?? NSHomeDirectory()
+            env["CODEX_HOME"] = "\(home)/.codex"
+        }
         env["TELEGRAM_BOT_TOKEN"] = token
         env["ALLOWED_USERS"] = settings.allowedUsers.trimmingCharacters(in: .whitespacesAndNewlines)
         env["AIPAL_DROP_PENDING_UPDATES"] = settings.dropPendingUpdates ? "true" : "false"
