@@ -131,8 +131,8 @@
 			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\nEMBED_ROOT=\"${SRCROOT}/Embedded\"\nAPP_RES=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\nif [ ! -d \"${EMBED_ROOT}/aipal\" ] || [ ! -f \"${EMBED_ROOT}/runtime/node\" ]; then\n  echo \"error: Embedded runtime missing. Run scripts/prepare_embedded_runtime.sh first.\"\n  exit 1\nfi\nmkdir -p \"${APP_RES}/aipal\" \"${APP_RES}/runtime\"\nrsync -a --delete \"${EMBED_ROOT}/aipal/\" \"${APP_RES}/aipal/\"\nrsync -a --delete \"${EMBED_ROOT}/runtime/\" \"${APP_RES}/runtime/\"\nchmod +x \"${APP_RES}/runtime/node\"\n";
+				shellPath = /bin/sh;
+				shellScript = "/usr/bin/env bash \"${SRCROOT}/scripts/embed_runtime.sh\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
