@@ -8,10 +8,10 @@ In this repository, this directory is the embedded Aipal runtime used by NimbusA
 
 If you are working on NimbusAgent as an app, prefer the top-level [README](../../README.md) for setup and operational guidance. The rest of this document is still the standalone bot documentation for running Aipal directly.
 
-Minimal Telegram bot that forwards messages to a local CLI agent (Codex by default). Each message is executed locally and the output is sent back to the chat.
+Minimal Telegram bot that forwards messages to a local agent runtime (Codex by default). In Nimbus, Codex no longer runs only through raw CLI parsing: existing Codex sessions are resumed through the official Codex SDK, while new visible sessions still start through the interactive CLI path for Codex app compatibility.
 
 ## What it does
-- Runs your configured CLI agent for every message
+- Runs your configured local agent for every message
 - Queues requests per chat to avoid overlapping runs
 - Keeps agent session state per topic/agent
 - Handles text, audio (via Parakeet), images, and documents
@@ -20,7 +20,7 @@ Minimal Telegram bot that forwards messages to a local CLI agent (Codex by defau
 
 ## Requirements
 - Node.js 24+
-- Agent CLI on PATH (default: `codex`, or `claude` / `gemini` / `opencode` when configured)
+- Agent runtime on PATH (default: `codex`, or `claude` / `gemini` / `opencode` when configured)
 - Audio (optional): `parakeet-mlx` or another command configured through `AIPAL_WHISPER_CMD`
 
 Recommended local tools when using Codex:
@@ -103,6 +103,8 @@ When the active agent is `codex`, Aipal can use local Codex sessions as the sour
 - `Continuar última sesión` attaches the latest session for the selected project.
 - `Crear nueva sesión` prepares the topic so the next prompt creates a new visible Codex session in that project.
 - Existing sessions can be attached manually with `/session <id>`.
+- New visible sessions are created through the interactive Codex CLI flow.
+- Existing sessions are resumed through the official Codex SDK.
 
 This allows two-way continuity:
 
@@ -205,11 +207,10 @@ This bot executes local commands on your machine. Run it only on trusted hardwar
 To restrict access, set `ALLOWED_USERS` in `.env` to a comma-separated list of Telegram user IDs. Unauthorized users are ignored (no reply).
 
 ## How it works
-- Builds a shell command with a base64-encoded prompt to avoid quoting issues
-- Executes the command locally via `bash -lc`
 - For `codex`, resolves project/session per topic and reuses local Codex sessions
-- For existing Codex sessions, stores `thread_id` and uses `exec resume`
-- For new Codex sessions, creates a visible session and then reuses it from Telegram
+- For existing Codex sessions, stores `thread_id` and resumes them through the official Codex SDK
+- For new Codex sessions, creates a visible interactive session first and then reuses it from Telegram
+- Other agents still run through their local CLI integrations
 - Audio is downloaded, transcribed, then forwarded as text
 - Images are downloaded into the image folder and included in the prompt
 
