@@ -32,6 +32,11 @@ Origen del agente integrado:
 
 Nimbus usa `codex` como agente principal para trabajar con proyectos y sesiones locales.
 
+La integración ya no depende solo de `codex exec` por shell. Nimbus mantiene **AIPAL** como backend embebido, pero el agente `codex` se ha adaptado para usar el **SDK oficial de Codex** como transporte principal al reanudar conversaciones, con un flujo híbrido para preservar compatibilidad con Codex app:
+
+- las sesiones visibles nuevas se crean con el CLI interactivo de Codex
+- las sesiones existentes se continúan a través del SDK oficial de Codex
+
 ### Sesiones compartidas
 
 La integración actual está pensada para que una misma conversación pueda continuar indistintamente desde Telegram o desde Codex app.
@@ -41,8 +46,8 @@ Reglas actuales:
 - El bot descubre sesiones locales de Codex leyendo `CODEX_HOME` o `~/.codex`.
 - Los proyectos se resuelven desde el `cwd` de las sesiones de Codex.
 - La selección de proyecto y sesión se guarda **por topic/chat/agente**, no de forma global.
-- Cuando el bot crea una sesión nueva para Codex, intenta crear una sesión visible para Codex app.
-- Cuando el bot continúa una sesión ya existente, reutiliza el `thread_id` de esa sesión.
+- Cuando el bot crea una sesión nueva para Codex, crea una sesión visible para Codex app mediante el CLI interactivo.
+- Cuando el bot continúa una sesión ya existente, reutiliza el `thread_id` de esa sesión mediante el SDK oficial de Codex.
 
 Limitación conocida de Codex app:
 
@@ -108,15 +113,22 @@ Estos requisitos no son necesarios para compilar o ejecutar la app si `Embedded/
 
 ## Dependencias externas
 
-### 1. Codex CLI
+### 1. Codex CLI + Codex SDK embebido
 
 Nimbus valida en preflight que `codex` exista en `PATH`.
 
 Qué se usa:
 
-- creación y reanudación de sesiones
+- creación visible de sesiones nuevas
+- reanudación de sesiones a través del SDK oficial de Codex
 - lectura de proyectos/sesiones locales
 - interoperabilidad con Codex app
+
+Notas:
+
+- Nimbus sigue requiriendo el binario `codex` en `PATH`.
+- La app embebe el paquete oficial `@openai/codex-sdk` dentro de `Embedded/aipal`.
+- El SDK se usa desde AIPAL; Nimbus no sustituye AIPAL, sino que cambió el transporte interno del agente `codex`.
 
 Validación:
 
