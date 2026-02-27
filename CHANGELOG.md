@@ -22,6 +22,7 @@ The format is based on Keep a Changelog.
 - Local Codex session reconciliation after interactive creation is more robust for project-bound sessions
 - Progress messages no longer stay stuck in `Codex: iniciando sesion...` when creation fails
 - New Codex sessions are resolved back to the correct topic and project more consistently
+- Embedded runtime notarization now strips bundled `biome`, re-signs embedded `rg`/`codex`, and signs the bundled `node` binary with the Hardened Runtime JIT entitlement so the agent can start correctly
 
 ## [1.1.0] - 2026-02-27
 
