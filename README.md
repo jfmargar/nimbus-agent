@@ -7,6 +7,10 @@ Su objetivo principal es operar sesiones de agentes desde Telegram, con integrac
 - `Codex app -> bot de Telegram`
 - `bot de Telegram -> Codex app`
 
+Descarga directa del paquete generado:
+
+- [NimbusAgent.dmg](release/NimbusAgent.dmg)
+
 ## Qué hace la app
 
 - Inicia y detiene el agente desde el menú de macOS.
