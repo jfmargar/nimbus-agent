@@ -10,6 +10,7 @@ const MENU_NAV_TTL_MS = 30 * 60 * 1000;
 const MENU_PROJECT_PAGE_SIZE = 8;
 const MENU_SESSION_PAGE_SIZE = 6;
 const MENU_SEARCH_MAX_RESULTS = 200;
+const SESSION_NAME_MAX_CHARS = 120;
 
 const MENU_BTN_SEARCH = 'Buscar';
 const MENU_BTN_PREV = 'Anterior';
@@ -65,6 +66,23 @@ function normalizeMenuText(value) {
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
+}
+
+function normalizeSessionName(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildSessionSeedPrompt(sessionName) {
+  const normalizedName = normalizeSessionName(sessionName);
+  return [
+    normalizedName,
+    '',
+    'Este mensaje solo establece el nombre de la sesion.',
+    'Responde solo: "Sesion lista."',
+    'Despues espera la siguiente solicitud del usuario.',
+  ].join('\n');
 }
 
 function createMenuInstanceId() {
@@ -330,9 +348,11 @@ function buildProjectActionsKeyboard() {
 function registerSettingsCommands(options) {
   const {
     allowedUsers,
+    beginProgress,
     bot,
     buildTopicKey,
     clearAgentOverride,
+    codexProgressUpdatesEnabled,
     clearProjectForAgent,
     clearModelOverride,
     clearThreadForAgent,
@@ -362,6 +382,7 @@ function registerSettingsCommands(options) {
     persistThreads,
     listLocalCodexSessions,
     replyWithError,
+    renderProgressEvent,
     resolveAgentProjectCwd,
     setAgentOverride,
     setGlobalAgent,
@@ -373,6 +394,7 @@ function registerSettingsCommands(options) {
     setThreadForAgent,
     startTyping,
     threadTurns,
+    runAgentForChat,
     updateConfig,
     wrapCommandWithPty,
     isValidSessionId,
@@ -425,7 +447,52 @@ function registerSettingsCommands(options) {
       page: 0,
       query: '',
       awaitingSearch: false,
+      awaitingSessionName: false,
+      pendingSessionProjectCwd: '',
     });
+  }
+
+  function setAwaitingSessionNameState(chatId, topicId, cwd) {
+    const key = menuNavKeyFromIds(chatId, topicId);
+    menuNavCache.set(key, {
+      createdAt: Date.now(),
+      menuInstanceId: createMenuInstanceId(),
+      level: 'main',
+      page: 0,
+      query: '',
+      awaitingSearch: false,
+      awaitingSessionName: true,
+      pendingSessionProjectCwd: String(cwd || '').trim(),
+    });
+  }
+
+  async function createExecutionFeedback(ctx, effectiveAgentId, initialText) {
+    const useProgress =
+      codexProgressUpdatesEnabled &&
+      effectiveAgentId === 'codex' &&
+      typeof beginProgress === 'function';
+    if (!useProgress) {
+      return {
+        onEvent: undefined,
+        progress: null,
+        stopTyping: startTyping(ctx),
+      };
+    }
+    const progress = await beginProgress(
+      ctx,
+      String(initialText || 'Codex: iniciando sesion...').trim()
+    );
+    return {
+      onEvent: async (event) => {
+        if (!progress || event?.type === 'output_text') return;
+        const message = renderProgressEvent(event);
+        if (message) {
+          await progress.update(message);
+        }
+      },
+      progress,
+      stopTyping: () => {},
+    };
   }
 
   async function openMainMenu(ctx) {
@@ -796,11 +863,11 @@ function registerSettingsCommands(options) {
       return;
     }
 
-    setMainMenuState(chatId, topicId);
+    setAwaitingSessionNameState(chatId, topicId, cwd);
     await ctx.reply(
       `Proyecto activo: ${projectNameFromCwd(
         cwd
-      )}\nLa próxima consulta creará una sesión nueva en este proyecto.`,
+      )}\nEscribe ahora el nombre de la sesión. Ese mensaje se usará solo como título.`,
       {
         reply_markup: buildMainMenuKeyboard(),
       }
@@ -1486,6 +1553,77 @@ function registerSettingsCommands(options) {
   bot.on('text', async (ctx, next) => {
     cleanupMenuNavCache();
     const { key, state } = resolveMenuStateForChatTopic(ctx.chat.id, getTopicId(ctx));
+    if (state?.awaitingSessionName) {
+      const text = String(ctx.message?.text || '').trim();
+      if (!text) {
+        return next();
+      }
+      if (text.startsWith('/')) {
+        setMainMenuState(ctx.chat.id, getTopicId(ctx));
+        return next();
+      }
+
+      const sessionName = normalizeSessionName(text);
+      if (!sessionName) {
+        await ctx.reply('Escribe un nombre breve para la sesión.');
+        return;
+      }
+      if (sessionName.length > SESSION_NAME_MAX_CHARS) {
+        await ctx.reply(
+          `Usa un nombre más corto para la sesión (máximo ${SESSION_NAME_MAX_CHARS} caracteres).`
+        );
+        return;
+      }
+
+      const chatId = ctx.chat.id;
+      const topicId = getTopicId(ctx);
+      const effectiveAgentId = effectiveAgentFor(chatId, topicId);
+      const cwd = String(state?.pendingSessionProjectCwd || resolveStateCwd(state)).trim();
+      const restoreState = {
+        ...state,
+        createdAt: Date.now(),
+        awaitingSearch: false,
+        awaitingSessionName: true,
+        pendingSessionProjectCwd: cwd,
+      };
+      setMainMenuState(chatId, topicId);
+
+      const feedback = await createExecutionFeedback(
+        ctx,
+        effectiveAgentId,
+        'Codex: creando sesion...'
+      );
+      try {
+        await runAgentForChat(chatId, buildSessionSeedPrompt(sessionName), {
+          topicId,
+          onEvent: feedback.onEvent,
+          waitForInteractiveCompletion: true,
+        });
+        feedback.stopTyping();
+        if (feedback.progress) {
+          await feedback.progress.finish();
+        }
+        await ctx.reply(
+          `Sesión "${sessionName}" creada en ${projectNameFromCwd(
+            cwd
+          )}.\nEnvía ahora tu primera solicitud.`,
+          {
+            reply_markup: buildMainMenuKeyboard(),
+          }
+        );
+        return;
+      } catch (err) {
+        console.error(err);
+        feedback.stopTyping();
+        if (feedback.progress) {
+          await feedback.progress.fail('Codex: error durante la ejecucion.');
+        }
+        menuNavCache.set(key, restoreState);
+        await replyWithError(ctx, 'No pude crear la sesión de Codex.', err);
+        return;
+      }
+    }
+
     if (!state?.awaitingSearch) {
       return next();
     }

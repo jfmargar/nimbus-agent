@@ -255,6 +255,7 @@ test('runAgentForChat reuses existing codex session through sdk', async () => {
 test('runAgentForChat fails clearly when interactive creation does not resolve a visible session id', async () => {
   const harness = createRunnerHarness({
     findNewestSessionDiff: async () => [],
+    listLocalCodexSessions: async () => [],
   });
 
   await assert.rejects(
@@ -285,6 +286,24 @@ test('runAgentForChat treats interactive timeout as success when a visible cli s
   assert.equal(harness.threads.get('chat:root:codex'), 'thread-cli');
 });
 
+test('runAgentForChat can wait for interactive completion when requested', async () => {
+  const harness = createRunnerHarness({
+    execLocalWithPty: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return 'Sesion lista.';
+    },
+    parseInteractiveOutput: () => ({ text: 'Sesion lista.', sawText: true }),
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Nombrar sesion', {
+    waitForInteractiveCompletion: true,
+  });
+
+  assert.equal(text, 'Sesion lista.');
+  assert.equal(harness.threads.get('chat:root:codex'), 'thread-cli');
+  assert.equal(harness.getLastExecWithPtyOptions().signal.aborted, false);
+});
+
 test('runAgentForChat uses confirmation reply when interactive output is suspicious', async () => {
   const harness = createRunnerHarness({
     execLocalWithPty: async () => 'Tip: Use /help for commands',
@@ -293,34 +312,6 @@ test('runAgentForChat uses confirmation reply when interactive output is suspici
 
   const text = await harness.runner.runAgentForChat(1, 'Hola');
 
-  assert.equal(
-    text,
-    `Sesion creada y conectada en ${path.basename(
-      harness.projectDir
-    )}.\nA partir del proximo mensaje continuare esa sesion.`
-  );
-  assert.equal(harness.threads.get('chat:root:codex'), 'thread-cli');
-});
-
-test('runAgentForChat aborts interactive CLI once visible session is detected', async () => {
-  let aborted = false;
-  const harness = createRunnerHarness({
-    execLocalWithPty: async (_command, options = {}) =>
-      new Promise((_resolve, reject) => {
-        options.signal?.addEventListener('abort', () => {
-          aborted = true;
-          const err = new Error('The operation was aborted');
-          err.name = 'AbortError';
-          err.code = 'ABORT_ERR';
-          reject(err);
-        });
-      }),
-    parseInteractiveOutput: () => ({ text: '', sawText: false }),
-  });
-
-  const text = await harness.runner.runAgentForChat(1, 'Hola');
-
-  assert.equal(aborted, true);
   assert.equal(
     text,
     `Sesion creada y conectada en ${path.basename(

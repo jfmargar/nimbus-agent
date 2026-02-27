@@ -118,6 +118,10 @@ function createTelegramReplyService(options) {
         if (!active) return;
         const nextText = String(text || '').trim();
         if (!nextText) return;
+        if (flushTimer) {
+          clearTimeout(flushTimer);
+          flushTimer = null;
+        }
         pendingText = nextText;
         await flush(true);
       },

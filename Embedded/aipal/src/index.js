@@ -442,12 +442,14 @@ bot.start(async (ctx) => {
 });
 registerCommands({
   allowedUsers,
+  beginProgress,
   bot,
   buildCronTriggerPayload,
   buildMemoryThreadKey,
   buildTopicKey,
   clearAgentOverride: (chatId, topicId) =>
     clearAgentOverride(agentOverrides, chatId, topicId),
+  codexProgressUpdatesEnabled: CODEX_PROGRESS_UPDATES,
   clearModelOverride,
   clearThreadForAgent: (chatId, topicId, agentId) =>
     clearThreadForAgent(threads, chatId, topicId, agentId),
@@ -489,9 +491,11 @@ registerCommands({
   persistProjectOverrides,
   persistThreads,
   replyWithError,
+  renderProgressEvent,
   resolveAgentProjectCwd,
   resolveThreadId,
   resolveEffectiveAgentId,
+  runAgentForChat,
   saveCronJobs,
   scriptManager,
   searchMemory,

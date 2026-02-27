@@ -19,6 +19,10 @@ function isSessionCompatibleWithProject(sessionMeta, projectCwd) {
   return candidate === target || candidate.startsWith(`${target}${path.sep}`);
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function createAgentRunner(options) {
   const {
     agentMaxBuffer,
@@ -241,7 +245,7 @@ function createAgentRunner(options) {
   }
 
   async function resolveNewCliSessionId(snapshot, cwd) {
-    for (let attempt = 0; attempt < 4; attempt += 1) {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
       const resolved = await findCreatedCliSession({
         cwd,
         previousIds: snapshot.previousIds,
@@ -250,7 +254,7 @@ function createAgentRunner(options) {
       if (resolved?.session || resolved?.detectionSource?.includes('ambiguous')) {
         return resolved;
       }
-      await new Promise((resolve) => setTimeout(resolve, 350));
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
     return null;
   }
@@ -326,6 +330,7 @@ function createAgentRunner(options) {
     thinking,
     threadKey,
     threads,
+    waitForInteractiveCompletion = false,
   }) {
     if (typeof agent.buildInteractiveNewSessionCommand !== 'function') {
       throw new Error(
@@ -362,47 +367,35 @@ function createAgentRunner(options) {
     const abortController = new AbortController();
     let output = '';
     let execError;
-    let resolved;
-    try {
-      const execPromise = execLocalWithPty(command, {
-        ...buildExecOptions({}, executionCwd),
-        timeout: interactiveNewSessionTimeoutMs,
-        maxBuffer: agentMaxBuffer,
-        signal: abortController.signal,
-      });
-      const execStatusPromise = execPromise
-        .then(() => ({ type: 'exec' }))
-        .catch((error) => ({ type: 'exec', error }));
-      const resolvePromise = resolveNewCliSessionId(snapshot, executionCwd);
-      const firstResult = await Promise.race([
-        execStatusPromise,
-        resolvePromise.then((value) => ({ type: 'resolve', value })),
-      ]);
-
-      if (firstResult.type === 'resolve') {
-        resolved = firstResult.value;
-        if (resolved?.session) {
-          abortController.abort();
-        }
-      }
-
-      try {
-        output = await execPromise;
-      } catch (err) {
+    let execFinished = false;
+    const execPromise = execLocalWithPty(command, {
+      ...buildExecOptions({}, executionCwd),
+      timeout: interactiveNewSessionTimeoutMs,
+      maxBuffer: agentMaxBuffer,
+      signal: abortController.signal,
+    })
+      .then((value) => {
+        execFinished = true;
+        output = value;
+      })
+      .catch((err) => {
+        execFinished = true;
         execError = err;
         if (err && typeof err.stdout === 'string') {
           output = err.stdout;
         }
-      }
+      });
 
-      if (!resolved) {
-        resolved = await resolvePromise;
+    let resolved;
+    try {
+      resolved = await resolveNewCliSessionId(snapshot, executionCwd);
+      if (resolved?.session && !waitForInteractiveCompletion) {
+        await Promise.race([execPromise, delay(1200)]);
+        if (!execFinished) {
+          abortController.abort();
+        }
       }
-    } catch (err) {
-      execError = err;
-      if (err && typeof err.stdout === 'string') {
-        output = err.stdout;
-      }
+      await execPromise;
     } finally {
       const elapsedMs = Date.now() - startedAt;
       console.info(
@@ -436,6 +429,24 @@ function createAgentRunner(options) {
     );
 
     if (!candidateId) {
+      const fallbackLatest = await resolveLatestCodexSessionId(executionCwd);
+      if (fallbackLatest) {
+        await syncThreadAndProject({
+          chatId,
+          topicId,
+          effectiveAgentId,
+          threadKey,
+          threadId: fallbackLatest,
+          executionCwd,
+          threads,
+        });
+        return buildInteractiveCreationReply({
+          executionCwd,
+          parsedText: parsed?.text,
+          execError,
+          candidateId: fallbackLatest,
+        });
+      }
       if (detectionSource.includes('ambiguous')) {
         throw new Error(
           'No pude asociar de forma segura la nueva sesion visible de Codex. Puedes reintentar o usar Continuar ultima sesion.'
@@ -456,10 +467,7 @@ function createAgentRunner(options) {
       threads,
     });
 
-    const abortedAfterSessionDetection =
-      execError?.name === 'AbortError' ||
-      execError?.code === 'ABORT_ERR';
-    if (execError && !abortedAfterSessionDetection) {
+    if (execError) {
       console.warn(
         `Agent interactive new-session exited non-zero chat=${chatId} topic=${topicId || 'root'} code=${
           execError.code || 'unknown'
@@ -669,6 +677,7 @@ function createAgentRunner(options) {
       scriptContext,
       documentPaths,
       onEvent,
+      waitForInteractiveCompletion = false,
     } = runOptions;
     const effectiveAgentId = resolveEffectiveAgentId(
       chatId,
@@ -787,6 +796,7 @@ function createAgentRunner(options) {
         thinking,
         threadKey,
         threads,
+        waitForInteractiveCompletion,
       });
     }
 

@@ -4,7 +4,26 @@ All notable changes to NimbusAgent will be documented in this file.
 
 The format is based on Keep a Changelog.
 
-## [1.1.0] - Planned
+## [Unreleased]
+
+### Added
+- Official Codex SDK integration inside the embedded AIPAL runtime for structured resumed turns
+- Telegram progress updates for Codex execution states instead of relying only on typing indicators
+- Codex integration settings for approval mode, sandbox mode, and progress visibility in the macOS app
+- Session naming flow for `Crear nueva sesión`, so the first user message can be used as the visible session title
+
+### Changed
+- Codex now uses a hybrid transport:
+  - new visible sessions are created through the interactive CLI flow
+  - existing sessions are resumed through the official Codex SDK
+- New session creation now keeps compatibility with Codex app visibility while preserving SDK-based progress and error handling
+
+### Fixed
+- Local Codex session reconciliation after interactive creation is more robust for project-bound sessions
+- Progress messages no longer stay stuck in `Codex: iniciando sesion...` when creation fails
+- New Codex sessions are resolved back to the correct topic and project more consistently
+
+## [1.1.0] - 2026-02-27
 
 ### Added
 - Bidirectional Codex conversation continuity:
@@ -36,7 +55,7 @@ The format is based on Keep a Changelog.
   - Codex shared-session behavior
   - embedded runtime preparation requirements
 
-## [1.0.1]
+## [1.0.1] - 2026-02-26
 
 ### Added
 - macOS menu bar app shell for NimbusAgent
