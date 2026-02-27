@@ -65,6 +65,10 @@ function createAgentRunner(options) {
     wrapCommandWithPty,
   } = options;
   const interactiveNewSessionTimeoutMs = Math.min(agentTimeoutMs, 45000);
+  const interactiveCompletionGraceMs = 1500;
+  const interactiveEarlyAbortGraceMs = 600;
+  const cliSessionResolveAttempts = 16;
+  const cliSessionResolveIntervalMs = 250;
   const codexSdkClient = createCodexSdkClient({
     agentTimeoutMs,
     approvalMode: codexApprovalMode,
@@ -245,7 +249,7 @@ function createAgentRunner(options) {
   }
 
   async function resolveNewCliSessionId(snapshot, cwd) {
-    for (let attempt = 0; attempt < 12; attempt += 1) {
+    for (let attempt = 0; attempt < cliSessionResolveAttempts; attempt += 1) {
       const resolved = await findCreatedCliSession({
         cwd,
         previousIds: snapshot.previousIds,
@@ -254,7 +258,7 @@ function createAgentRunner(options) {
       if (resolved?.session || resolved?.detectionSource?.includes('ambiguous')) {
         return resolved;
       }
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, cliSessionResolveIntervalMs));
     }
     return null;
   }
@@ -319,6 +323,26 @@ function createAgentRunner(options) {
     )}.\nA partir del proximo mensaje continuare esa sesion.`;
   }
 
+  function finalizeInteractiveExecution({
+    execPromise,
+    abortController,
+    getExecFinished,
+    graceMs,
+    chatId,
+    topicId,
+  }) {
+    return (async () => {
+      await Promise.race([execPromise, delay(graceMs)]);
+      if (!getExecFinished()) {
+        console.info(
+          `pty_abort_requested chat=${chatId} topic=${topicId || 'root'} reason=grace_elapsed graceMs=${graceMs}`
+        );
+        abortController.abort(new Error('grace_elapsed'));
+      }
+      await execPromise;
+    })();
+  }
+
   async function runCodexNewSessionInteractive({
     agent,
     chatId,
@@ -331,6 +355,7 @@ function createAgentRunner(options) {
     threadKey,
     threads,
     waitForInteractiveCompletion = false,
+    backgroundInteractiveCleanup = false,
   }) {
     if (typeof agent.buildInteractiveNewSessionCommand !== 'function') {
       throw new Error(
@@ -386,42 +411,61 @@ function createAgentRunner(options) {
         }
       });
 
-    let resolved;
-    try {
-      resolved = await resolveNewCliSessionId(snapshot, executionCwd);
-      if (resolved?.session && !waitForInteractiveCompletion) {
-        await Promise.race([execPromise, delay(1200)]);
-        if (!execFinished) {
-          abortController.abort();
-        }
-      }
-      await execPromise;
-    } finally {
-      const elapsedMs = Date.now() - startedAt;
-      console.info(
-        `Agent finished chat=${chatId} topic=${topicId || 'root'} durationMs=${elapsedMs} mode=new-interactive-cli`
-      );
-    }
+    const graceMs = waitForInteractiveCompletion
+      ? interactiveCompletionGraceMs
+      : interactiveEarlyAbortGraceMs;
+    const cleanupPromise = finalizeInteractiveExecution({
+      execPromise,
+      abortController,
+      getExecFinished: () => execFinished,
+      graceMs,
+      chatId,
+      topicId,
+    });
 
-    const parsed = typeof agent.parseInteractiveOutput === 'function'
-      ? agent.parseInteractiveOutput(output)
-      : { text: String(output || '').trim(), sawText: Boolean(String(output || '').trim()) };
-    if (execError || !String(parsed?.text || '').trim()) {
-      const preview = String(output || '')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 400);
-      if (preview) {
-        console.warn(
-          `Agent interactive new-session output preview chat=${chatId} topic=${
-            topicId || 'root'
-          } preview=${preview}`
+    let resolved;
+    async function finalizeCleanup() {
+      try {
+        await cleanupPromise;
+      } finally {
+        const elapsedMs = Date.now() - startedAt;
+        console.info(
+          `Agent finished chat=${chatId} topic=${topicId || 'root'} durationMs=${elapsedMs} mode=new-interactive-cli`
         );
       }
+
+      const parsed = typeof agent.parseInteractiveOutput === 'function'
+        ? agent.parseInteractiveOutput(output)
+        : { text: String(output || '').trim(), sawText: Boolean(String(output || '').trim()) };
+      if (execError || !String(parsed?.text || '').trim()) {
+        const preview = String(output || '')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 400);
+        if (preview) {
+          console.warn(
+            `Agent interactive new-session output preview chat=${chatId} topic=${
+              topicId || 'root'
+            } preview=${preview}`
+          );
+        }
+      }
+      return {
+        parsed,
+        execError,
+      };
     }
-    const candidateId = String(resolved?.session?.id || '').trim();
+
+    resolved = await resolveNewCliSessionId(snapshot, executionCwd);
+    let candidateId = String(resolved?.session?.id || '').trim();
     const detectionSource = String(resolved?.detectionSource || 'none');
     const sourceType = String(resolved?.session?.source || '').trim().toLowerCase() || 'unknown';
+    if (!candidateId) {
+      const earlyLatest = await resolveLatestCodexSessionId(executionCwd);
+      if (earlyLatest) {
+        candidateId = earlyLatest;
+      }
+    }
     console.info(
       `Agent new-session resolve chat=${chatId} topic=${topicId || 'root'} candidateIds=${
         candidateId || '(none)'
@@ -429,6 +473,7 @@ function createAgentRunner(options) {
     );
 
     if (!candidateId) {
+      const cleanupResult = await finalizeCleanup();
       const fallbackLatest = await resolveLatestCodexSessionId(executionCwd);
       if (fallbackLatest) {
         await syncThreadAndProject({
@@ -440,12 +485,15 @@ function createAgentRunner(options) {
           executionCwd,
           threads,
         });
-        return buildInteractiveCreationReply({
-          executionCwd,
-          parsedText: parsed?.text,
-          execError,
-          candidateId: fallbackLatest,
-        });
+        return {
+          text: buildInteractiveCreationReply({
+            executionCwd,
+            parsedText: cleanupResult.parsed?.text,
+            execError: cleanupResult.execError,
+            candidateId: fallbackLatest,
+          }),
+          threadId: fallbackLatest,
+        };
       }
       if (detectionSource.includes('ambiguous')) {
         throw new Error(
@@ -467,19 +515,49 @@ function createAgentRunner(options) {
       threads,
     });
 
-    if (execError) {
+    if (backgroundInteractiveCleanup) {
+      return {
+        text: buildInteractiveCreationReply({
+          executionCwd,
+          parsedText: '',
+          execError: null,
+          candidateId,
+        }),
+        threadId: candidateId,
+        cleanupPromise: finalizeCleanup()
+          .then((result) => ({
+            finished: true,
+            parsedText: result.parsed?.text || '',
+            execError: result.execError || null,
+          }))
+          .catch((err) => {
+            console.warn('Interactive cleanup failed after session attach:', err);
+            return {
+              finished: false,
+              parsedText: '',
+              execError: err,
+            };
+          }),
+      };
+    }
+
+    const cleanupResult = await finalizeCleanup();
+    if (cleanupResult.execError) {
       console.warn(
         `Agent interactive new-session exited non-zero chat=${chatId} topic=${topicId || 'root'} code=${
-          execError.code || 'unknown'
+          cleanupResult.execError.code || 'unknown'
         } timeoutMs=${interactiveNewSessionTimeoutMs}`
       );
     }
-    return buildInteractiveCreationReply({
-      executionCwd,
-      parsedText: parsed?.text,
-      execError,
-      candidateId,
-    });
+    return {
+      text: buildInteractiveCreationReply({
+        executionCwd,
+        parsedText: cleanupResult.parsed?.text,
+        execError: cleanupResult.execError,
+        candidateId,
+      }),
+      threadId: candidateId,
+    };
   }
 
   async function runCodexTurn({
@@ -669,7 +747,7 @@ function createAgentRunner(options) {
     return parsed.text || output;
   }
 
-  async function runAgentForChat(chatId, prompt, runOptions = {}) {
+  async function runAgentTurnForChat(chatId, prompt, runOptions = {}) {
     const {
       topicId,
       agentId: overrideAgentId,
@@ -678,6 +756,7 @@ function createAgentRunner(options) {
       documentPaths,
       onEvent,
       waitForInteractiveCompletion = false,
+      backgroundInteractiveCleanup = false,
     } = runOptions;
     const effectiveAgentId = resolveEffectiveAgentId(
       chatId,
@@ -797,6 +876,7 @@ function createAgentRunner(options) {
         threadKey,
         threads,
         waitForInteractiveCompletion,
+        backgroundInteractiveCleanup,
       });
     }
 
@@ -816,7 +896,9 @@ function createAgentRunner(options) {
         threadId,
         onEvent,
       });
-      return result.text;
+      return {
+        text: result.text,
+      };
     }
 
     const promptBase64 = Buffer.from(finalPrompt, 'utf8').toString('base64');
@@ -912,11 +994,19 @@ function createAgentRunner(options) {
       executionCwd,
       threads,
     });
-    return parsed.text || output;
+    return {
+      text: parsed.text || output,
+    };
+  }
+
+  async function runAgentForChat(chatId, prompt, runOptions = {}) {
+    const result = await runAgentTurnForChat(chatId, prompt, runOptions);
+    return result?.text || '';
   }
 
   return {
     runAgentForChat,
+    runAgentTurnForChat,
     runAgentOneShot,
   };
 }

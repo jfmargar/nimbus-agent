@@ -1,4 +1,8 @@
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
+
+const PTY_PYTHON_SNIPPET = 'import pty,sys; pty.spawn(["bash","-lc", sys.argv[1]])';
+const PTY_INTERRUPT_GRACE_MS = 400;
+const PTY_KILL_GRACE_MS = 1000;
 
 function shellQuote(value) {
   const escaped = String(value).replace(/'/g, String.raw`'\''`);
@@ -6,20 +10,248 @@ function shellQuote(value) {
 }
 
 function wrapCommandWithPty(command) {
-  const python = 'import pty,sys; pty.spawn(["bash","-lc", sys.argv[1]])';
-  return `python3 -c ${shellQuote(python)} ${shellQuote(command)}`;
+  return `python3 -c ${shellQuote(PTY_PYTHON_SNIPPET)} ${shellQuote(command)}`;
+}
+
+function createProcessError(message, extra = {}) {
+  const err = new Error(message);
+  Object.assign(err, extra);
+  return err;
+}
+
+function killProcessGroup(child, signal) {
+  if (!child?.pid) return false;
+  try {
+    process.kill(-child.pid, signal);
+    console.info(`pty_kill_sent pid=${child.pid} signal=${signal}`);
+    return true;
+  } catch (err) {
+    if (err?.code !== 'ESRCH') {
+      console.warn(`pty_kill_failed pid=${child.pid} signal=${signal}`, err);
+    }
+    return false;
+  }
+}
+
+function resolveAbortSignalSequence(reason) {
+  const normalizedReason = String(reason || '').trim().toLowerCase();
+  if (normalizedReason.includes('grace_elapsed')) {
+    return [
+      { signal: 'SIGINT', delayMs: PTY_INTERRUPT_GRACE_MS },
+      { signal: 'SIGTERM', delayMs: PTY_KILL_GRACE_MS },
+      { signal: 'SIGKILL', delayMs: 0 },
+    ];
+  }
+  return [
+    { signal: 'SIGTERM', delayMs: PTY_KILL_GRACE_MS },
+    { signal: 'SIGKILL', delayMs: 0 },
+  ];
 }
 
 function execLocalWithPty(command, options = {}) {
-  const wrapped = wrapCommandWithPty(command);
+  const {
+    timeout,
+    maxBuffer,
+    signal,
+    env: extraEnv,
+    cwd,
+  } = options;
   const env = {
     ...process.env,
     TERM: 'xterm-256color',
-    ...(options.env || {}),
+    ...(extraEnv || {}),
   };
-  return execLocal('bash', ['-lc', wrapped], {
-    ...options,
-    env,
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('python3', ['-c', PTY_PYTHON_SNIPPET, command], {
+      cwd,
+      env,
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    console.info(`pty_spawned pid=${child.pid} detached=true`);
+
+    let stdout = '';
+    let stderr = '';
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let settled = false;
+    let forceKillTimers = [];
+    let timeoutTimer = null;
+    let abortListener = null;
+    let exitCode = null;
+    let exitSignal = null;
+    let stopError = null;
+
+    function cleanup() {
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
+      if (forceKillTimers.length) {
+        for (const timer of forceKillTimers) {
+          clearTimeout(timer);
+        }
+        forceKillTimers = [];
+      }
+      if (abortListener && signal) {
+        signal.removeEventListener('abort', abortListener);
+        abortListener = null;
+      }
+    }
+
+    function finish(err, output = stdout) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (err) {
+        if (typeof err.stdout !== 'string') err.stdout = stdout;
+        if (typeof err.stderr !== 'string') err.stderr = stderr;
+        reject(err);
+        return;
+      }
+      resolve(output || '');
+    }
+
+    function requestGroupStop(reason, errorFactory) {
+      if (settled || stopError) return;
+      if (reason === 'timeout') {
+        console.info(`pty_timeout pid=${child.pid} timeoutMs=${timeout}`);
+      } else if (reason === 'abort') {
+        console.info(`pty_abort_requested pid=${child.pid} reason=${String(signal?.reason?.message || signal?.reason || 'signal')}`);
+      } else if (reason === 'max_buffer') {
+        console.info(`pty_abort_requested pid=${child.pid} reason=max_buffer`);
+      }
+      stopError = errorFactory();
+      const signalSequence =
+        reason === 'abort'
+          ? resolveAbortSignalSequence(signal?.reason?.message || signal?.reason)
+          : [
+              { signal: 'SIGTERM', delayMs: PTY_KILL_GRACE_MS },
+              { signal: 'SIGKILL', delayMs: 0 },
+            ];
+
+      let accumulatedDelayMs = 0;
+      for (let index = 0; index < signalSequence.length; index += 1) {
+        const entry = signalSequence[index];
+        if (index === 0) {
+          killProcessGroup(child, entry.signal);
+          accumulatedDelayMs += entry.delayMs;
+          continue;
+        }
+        const timer = setTimeout(() => {
+          killProcessGroup(child, entry.signal);
+        }, accumulatedDelayMs);
+        forceKillTimers.push(timer);
+        accumulatedDelayMs += entry.delayMs;
+      }
+    }
+
+    if (child.stdout) {
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk) => {
+        if (settled) return;
+        const value = String(chunk);
+        stdout += value;
+        stdoutBytes += Buffer.byteLength(value, 'utf8');
+        if (Number.isFinite(maxBuffer) && maxBuffer > 0 && stdoutBytes > maxBuffer) {
+          requestGroupStop('max_buffer', () =>
+            createProcessError(
+              `stdout maxBuffer length exceeded: ${maxBuffer}`,
+              { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' }
+            )
+          );
+        }
+      });
+    }
+
+    if (child.stderr) {
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk) => {
+        if (settled) return;
+        const value = String(chunk);
+        stderr += value;
+        stderrBytes += Buffer.byteLength(value, 'utf8');
+        if (Number.isFinite(maxBuffer) && maxBuffer > 0 && stderrBytes > maxBuffer) {
+          requestGroupStop('max_buffer', () =>
+            createProcessError(
+              `stderr maxBuffer length exceeded: ${maxBuffer}`,
+              { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' }
+            )
+          );
+        }
+      });
+    }
+
+    child.on('error', (err) => {
+      finish(err);
+    });
+
+    child.on('exit', (code, receivedSignal) => {
+      exitCode = code;
+      exitSignal = receivedSignal;
+      console.info(`pty_exit pid=${child.pid} code=${code ?? 'null'} signal=${receivedSignal || 'null'}`);
+    });
+
+    child.on('close', (code, receivedSignal) => {
+      if (settled) return;
+      cleanup();
+      if (stopError) {
+        finish(stopError);
+        return;
+      }
+      if (code === 0) {
+        settled = true;
+        resolve(stdout || '');
+        return;
+      }
+      const normalizedCode = exitCode ?? code;
+      const normalizedSignal = exitSignal ?? receivedSignal;
+      finish(
+        createProcessError(
+          normalizedSignal
+            ? `Command terminated by signal ${normalizedSignal}`
+            : `Command exited with code ${normalizedCode}`,
+          {
+            code: normalizedCode,
+            signal: normalizedSignal,
+          }
+        )
+      );
+    });
+
+    if (Number.isFinite(timeout) && timeout > 0) {
+      timeoutTimer = setTimeout(() => {
+        requestGroupStop('timeout', () =>
+          createProcessError(`Command timed out after ${timeout}ms`, {
+            code: 'ETIMEDOUT',
+          })
+        );
+      }, timeout);
+    }
+
+    if (signal) {
+      if (signal.aborted) {
+        requestGroupStop('abort', () =>
+          createProcessError('Command aborted', {
+            code: 'ABORT_ERR',
+            name: 'AbortError',
+            cause: signal.reason,
+          })
+        );
+        return;
+      }
+      abortListener = () => {
+        requestGroupStop('abort', () =>
+          createProcessError('Command aborted', {
+            code: 'ABORT_ERR',
+            name: 'AbortError',
+            cause: signal.reason,
+          })
+        );
+      };
+      signal.addEventListener('abort', abortListener, { once: true });
+    }
   });
 }
 

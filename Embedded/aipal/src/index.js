@@ -292,7 +292,7 @@ const agentRunner = createAgentRunner({
   wrapCommandWithPty,
   defaultTimeZone: DEFAULT_TIME_ZONE,
 });
-const { runAgentForChat, runAgentOneShot } = agentRunner;
+const { runAgentForChat, runAgentTurnForChat, runAgentOneShot } = agentRunner;
 
 const telegramReplyService = createTelegramReplyService({
   bot,
@@ -447,6 +447,7 @@ registerCommands({
   buildCronTriggerPayload,
   buildMemoryThreadKey,
   buildTopicKey,
+  captureMemoryEvent,
   clearAgentOverride: (chatId, topicId) =>
     clearAgentOverride(agentOverrides, chatId, topicId),
   codexProgressUpdatesEnabled: CODEX_PROGRESS_UPDATES,
@@ -458,6 +459,7 @@ registerCommands({
   enqueue,
   execLocal,
   extractCommandValue,
+  extractMemoryText,
   getAgent,
   getAgentLabel,
   getAgentOverride: (chatId, topicId) =>
@@ -491,11 +493,13 @@ registerCommands({
   persistProjectOverrides,
   persistThreads,
   replyWithError,
+  replyWithResponse,
   renderProgressEvent,
   resolveAgentProjectCwd,
   resolveThreadId,
   resolveEffectiveAgentId,
   runAgentForChat,
+  runAgentTurnForChat,
   saveCronJobs,
   scriptManager,
   searchMemory,

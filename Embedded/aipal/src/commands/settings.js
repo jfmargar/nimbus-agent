@@ -11,6 +11,7 @@ const MENU_PROJECT_PAGE_SIZE = 8;
 const MENU_SESSION_PAGE_SIZE = 6;
 const MENU_SEARCH_MAX_RESULTS = 200;
 const SESSION_NAME_MAX_CHARS = 120;
+const AUTO_SEND_CLEANUP_WAIT_MS = 800;
 
 const MENU_BTN_SEARCH = 'Buscar';
 const MENU_BTN_PREV = 'Anterior';
@@ -83,6 +84,25 @@ function buildSessionSeedPrompt(sessionName) {
     'Responde solo: "Sesion lista."',
     'Despues espera la siguiente solicitud del usuario.',
   ].join('\n');
+}
+
+function parseSessionCreationInput(value) {
+  const normalized = String(value || '').replace(/\r\n/g, '\n').trim();
+  if (!normalized) {
+    return {
+      sessionName: '',
+      initialRequest: '',
+    };
+  }
+  const [firstLine = '', ...rest] = normalized.split('\n');
+  return {
+    sessionName: normalizeSessionName(firstLine),
+    initialRequest: rest.join('\n').trim(),
+  };
+}
+
+function waitMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function createMenuInstanceId() {
@@ -350,7 +370,9 @@ function registerSettingsCommands(options) {
     allowedUsers,
     beginProgress,
     bot,
+    buildMemoryThreadKey,
     buildTopicKey,
+    captureMemoryEvent,
     clearAgentOverride,
     codexProgressUpdatesEnabled,
     clearProjectForAgent,
@@ -359,6 +381,7 @@ function registerSettingsCommands(options) {
     curateMemory,
     execLocal,
     extractCommandValue,
+    extractMemoryText,
     getAgent,
     getAgentLabel,
     getAgentOverride,
@@ -382,6 +405,7 @@ function registerSettingsCommands(options) {
     persistThreads,
     listLocalCodexSessions,
     replyWithError,
+    replyWithResponse,
     renderProgressEvent,
     resolveAgentProjectCwd,
     setAgentOverride,
@@ -395,6 +419,7 @@ function registerSettingsCommands(options) {
     startTyping,
     threadTurns,
     runAgentForChat,
+    runAgentTurnForChat,
     updateConfig,
     wrapCommandWithPty,
     isValidSessionId,
@@ -867,7 +892,7 @@ function registerSettingsCommands(options) {
     await ctx.reply(
       `Proyecto activo: ${projectNameFromCwd(
         cwd
-      )}\nEscribe ahora el nombre de la sesión. Ese mensaje se usará solo como título.`,
+      )}\nEscribe el nombre de la sesión en la primera línea. Si quieres, añade debajo tu primera solicitud y la enviaré al crearla.`,
       {
         reply_markup: buildMainMenuKeyboard(),
       }
@@ -1563,7 +1588,7 @@ function registerSettingsCommands(options) {
         return next();
       }
 
-      const sessionName = normalizeSessionName(text);
+      const { sessionName, initialRequest } = parseSessionCreationInput(text);
       if (!sessionName) {
         await ctx.reply('Escribe un nombre breve para la sesión.');
         return;
@@ -1578,6 +1603,7 @@ function registerSettingsCommands(options) {
       const chatId = ctx.chat.id;
       const topicId = getTopicId(ctx);
       const effectiveAgentId = effectiveAgentFor(chatId, topicId);
+      const memoryThreadKey = buildMemoryThreadKey(chatId, topicId, effectiveAgentId);
       const cwd = String(state?.pendingSessionProjectCwd || resolveStateCwd(state)).trim();
       const restoreState = {
         ...state,
@@ -1594,11 +1620,70 @@ function registerSettingsCommands(options) {
         'Codex: creando sesion...'
       );
       try {
-        await runAgentForChat(chatId, buildSessionSeedPrompt(sessionName), {
-          topicId,
-          onEvent: feedback.onEvent,
-          waitForInteractiveCompletion: true,
-        });
+        const sessionCreation = await runAgentTurnForChat(
+          chatId,
+          buildSessionSeedPrompt(sessionName),
+          {
+            topicId,
+            onEvent: feedback.onEvent,
+            waitForInteractiveCompletion: true,
+            backgroundInteractiveCleanup: true,
+          }
+        );
+        if (initialRequest) {
+          const cleanupFinishedQuickly = sessionCreation?.cleanupPromise
+            ? await Promise.race([
+                sessionCreation.cleanupPromise.then(() => true),
+                waitMs(AUTO_SEND_CLEANUP_WAIT_MS).then(() => false),
+              ])
+            : true;
+          if (!cleanupFinishedQuickly) {
+            feedback.stopTyping();
+            if (feedback.progress) {
+              await feedback.progress.finish();
+            }
+            await ctx.reply(
+              `Sesión "${sessionName}" creada en ${projectNameFromCwd(
+                cwd
+              )}.\nLa he conectado al tópico, pero sigue cerrándose en Codex. Envía ahora tu primera solicitud.`,
+              {
+                reply_markup: buildMainMenuKeyboard(),
+              }
+            );
+            return;
+          }
+          await captureMemoryEvent({
+            threadKey: memoryThreadKey,
+            chatId,
+            topicId,
+            agentId: effectiveAgentId,
+            role: 'user',
+            kind: 'text',
+            text: initialRequest,
+          });
+          if (feedback.progress) {
+            await feedback.progress.update('Codex: enviando primera solicitud...');
+          }
+          const response = await runAgentForChat(chatId, initialRequest, {
+            topicId,
+            onEvent: feedback.onEvent,
+          });
+          await captureMemoryEvent({
+            threadKey: memoryThreadKey,
+            chatId,
+            topicId,
+            agentId: effectiveAgentId,
+            role: 'assistant',
+            kind: 'text',
+            text: extractMemoryText(response),
+          });
+          feedback.stopTyping();
+          if (feedback.progress) {
+            await feedback.progress.finish();
+          }
+          await replyWithResponse(ctx, response);
+          return;
+        }
         feedback.stopTyping();
         if (feedback.progress) {
           await feedback.progress.finish();
