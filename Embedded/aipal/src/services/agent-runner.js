@@ -25,6 +25,7 @@ function createAgentRunner(options) {
     buildBootstrapContext,
     buildMemoryRetrievalContext,
     buildPrompt,
+    buildSharedSessionPrompt,
     documentDir,
     execLocal,
     execLocalWithPty,
@@ -97,6 +98,10 @@ function createAgentRunner(options) {
       (typeof getDefaultAgentCwd === 'function' ? getDefaultAgentCwd() : undefined);
     if (!cwd) return base;
     return { ...base, cwd };
+  }
+
+  function isSharedCodexSession(agent) {
+    return String(agent?.id || '').trim().toLowerCase() === 'codex';
   }
 
   function isUsefulInteractiveReply(text) {
@@ -526,41 +531,56 @@ function createAgentRunner(options) {
       }
     }
 
+    const sharedCodexSession = isSharedCodexSession(agent);
     let promptWithContext = prompt;
     if (agent.id === 'claude') {
       promptWithContext = prefixTextWithTimestamp(promptWithContext, {
         timeZone: defaultTimeZone,
       });
     }
-    if (!threadId) {
+    if (!threadId && !sharedCodexSession) {
       const bootstrap = await buildBootstrapContext({ threadKey });
       promptWithContext = promptWithContext
         ? `${bootstrap}\n\n${promptWithContext}`
         : bootstrap;
     }
-    const retrievalContext = await buildMemoryRetrievalContext({
-      query: prompt,
-      chatId,
-      topicId,
-      agentId: effectiveAgentId,
-      limit: memoryRetrievalLimit,
-    });
-    if (retrievalContext) {
-      promptWithContext = promptWithContext
-        ? `${promptWithContext}\n\n${retrievalContext}`
-        : retrievalContext;
+    if (!sharedCodexSession) {
+      const retrievalContext = await buildMemoryRetrievalContext({
+        query: prompt,
+        chatId,
+        topicId,
+        agentId: effectiveAgentId,
+        limit: memoryRetrievalLimit,
+      });
+      if (retrievalContext) {
+        promptWithContext = promptWithContext
+          ? `${promptWithContext}\n\n${retrievalContext}`
+          : retrievalContext;
+      }
     }
 
     const thinking = getGlobalThinking();
-    const finalPrompt = buildPrompt(
-      promptWithContext,
-      imagePaths || [],
-      imageDir,
-      scriptContext,
-      documentPaths || [],
-      documentDir,
-      { includeFileInstructions: shouldIncludeFileInstructions }
-    );
+    const finalPrompt = sharedCodexSession
+      ? buildSharedSessionPrompt(
+          promptWithContext,
+          imagePaths || [],
+          scriptContext,
+          documentPaths || []
+        )
+      : buildPrompt(
+          promptWithContext,
+          imagePaths || [],
+          imageDir,
+          scriptContext,
+          documentPaths || [],
+          documentDir,
+          { includeFileInstructions: shouldIncludeFileInstructions }
+        );
+    if (!String(finalPrompt || '').trim()) {
+      throw new Error(
+        'No encontré contenido útil para enviar a Codex en este turno.'
+      );
+    }
     const model = getGlobalModels()[effectiveAgentId];
 
     if (agent.id === 'codex' && !threadId) {

@@ -75,6 +75,7 @@ const {
   chunkMarkdown,
   markdownToTelegramHtml,
   buildPrompt,
+  buildSharedSessionPrompt,
 } = require('./message-utils');
 const {
   isModelResetCommand,
@@ -255,6 +256,7 @@ const agentRunner = createAgentRunner({
   buildBootstrapContext,
   buildMemoryRetrievalContext,
   buildPrompt,
+  buildSharedSessionPrompt,
   documentDir: DOCUMENT_DIR,
   execLocal,
   execLocalWithPty,
