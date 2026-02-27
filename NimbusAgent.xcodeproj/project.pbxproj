@@ -131,8 +131,8 @@
 			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
-				shellPath = /bin/sh;
-				shellScript = "/usr/bin/env bash \"${SRCROOT}/scripts/embed_runtime.sh\"\n";
+			shellPath = /bin/sh;
+			shellScript = "/usr/bin/env bash \"${SRCROOT}/scripts/embed_runtime.sh\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -288,7 +288,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.0;
+				MARKETING_VERSION = 1.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.jfmargar.nimbus.NimbusAgent;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -322,7 +322,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.0;
+				MARKETING_VERSION = 1.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.jfmargar.nimbus.NimbusAgent;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
