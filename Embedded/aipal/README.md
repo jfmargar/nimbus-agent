@@ -1,0 +1,214 @@
+# Aipal: Telegram Codex Bot
+
+![CI](https://github.com/antoniolg/aipal/actions/workflows/ci.yml/badge.svg?branch=main)
+
+![Aipal](docs/assets/aipal.jpg)
+
+Minimal Telegram bot that forwards messages to a local CLI agent (Codex by default). Each message is executed locally and the output is sent back to the chat.
+
+## What it does
+- Runs your configured CLI agent for every message
+- Queues requests per chat to avoid overlapping runs
+- Keeps agent session state per topic/agent
+- Handles text, audio (via Parakeet), images, and documents
+- Supports `/thinking`, `/agent`, and `/cron` for runtime tweaks
+- Integrates local Codex projects/sessions so Telegram and Codex app can share the same conversation
+
+## Requirements
+- Node.js 24+
+- Agent CLI on PATH (default: `codex`, or `claude` / `gemini` / `opencode` when configured)
+- Audio (optional): `parakeet-mlx` or another command configured through `AIPAL_WHISPER_CMD`
+
+Recommended local tools when using Codex:
+- `codex` available on `PATH`
+- `CODEX_HOME` pointing to the same Codex home used by Codex app (default fallback: `~/.codex`)
+
+## Quick start
+```bash
+git clone https://github.com/antoniolg/aipal.git
+cd aipal
+npm install
+cp .env.example .env
+```
+
+1. Create a Telegram bot with BotFather and get the token.
+2. Set `TELEGRAM_BOT_TOKEN` in `.env`.
+3. Start the bot:
+
+```bash
+npm start
+```
+
+Open Telegram, send `/start`, then any message.
+
+## Usage (Telegram)
+- Text: send a message and get the agent response
+- Audio: send a voice note or audio file (transcribed with Parakeet)
+- Images: send a photo or image file (caption becomes the prompt)
+- Documents: send a file (caption becomes the prompt)
+- `/reset`: clear the current agent session (drops the stored session id for this agent) and trigger memory curation
+- `/thinking <level>`: set reasoning effort (mapped to `model_reasoning_effort`) for this session
+- `/agent <name>`: set the CLI agent
+    - In root: sets global agent (persisted in `config.json`)
+    - In a topic: sets an override for this topic (persisted in `agent-overrides.json`)
+- `/agent default`: clear agent override for the current topic and return to global agent
+- `/reset`: clear the current agent session for this topic (drops the stored session id for this agent)
+- `/model [model_id|reset]`: view/set/reset the model for the current agent (persisted in `config.json`)
+- `/project [path|reset]`: set/reset the working directory for the current topic
+- `/projects [n]`: list local Codex projects and open actions for that project
+- `/sessions [n]`: list recent local Codex sessions for the current topic project
+- `/session <id>`: attach a local Codex session to the current chat/topic
+- `/memory [status|tail [n]|search <query>|curate]`: inspect, search, and curate automatic memory
+- `/cron [list|reload|chatid|assign|unassign|run <jobId>]`: manage cron jobs (see below)
+- `/help`: list available commands and scripts
+- `/document_scripts confirm`: generate short descriptions for scripts (writes `scripts.json`; requires `ALLOWED_USERS`)
+- `/<script> [args]`: run an executable script from `~/.config/aipal/scripts`
+
+### Script metadata (scripts.json)
+Scripts can define metadata in `scripts.json` (stored inside `AIPAL_SCRIPTS_DIR`) to add descriptions or LLM post-processing.
+
+Example:
+```json
+{
+  "scripts": {
+    "xbrief": {
+      "description": "Filter briefing to AI/LLMs",
+      "llm": {
+        "prompt": "Filter the briefing to keep only AI and LLM items.\nRemove everything that is not AI without inventing or omitting anything relevant.\nMerge duplicates (same link or same content).\nKeep all sections and preserve links in [link](...) format.\nIf a section ends up empty, mark it as \"(No results)\".\nRespond in Spanish, direct and without filler."
+      }
+    }
+  }
+}
+```
+
+If `llm.prompt` is present, the script output is passed to the agent as context and the bot replies with the LLM response (not the raw output).
+
+### Telegram Topics
+Aipal supports Telegram Topics. Sessions and agent overrides are kept per-topic.
+- Messages in the main chat ("root") have their own sessions.
+- Messages in any topic thread have their own independent sessions.
+- You can set a different agent for each topic using `/agent <name>`.
+- For `codex`, project selection is also kept per topic/agent.
+
+### Codex projects and shared sessions
+
+When the active agent is `codex`, Aipal can use local Codex sessions as the source of truth for projects and conversations.
+
+- Projects are discovered from local Codex sessions using their `cwd`.
+- The selected project is stored per `chat/topic/agent`.
+- `Continuar última sesión` attaches the latest session for the selected project.
+- `Crear nueva sesión` prepares the topic so the next prompt creates a new visible Codex session in that project.
+- Existing sessions can be attached manually with `/session <id>`.
+
+This allows two-way continuity:
+
+- start in Codex app, continue in Telegram
+- start in Telegram, continue in Codex app
+
+### Clean shared prompt mode for Codex
+
+Codex uses a shared-session prompt mode so the conversation remains readable in Codex app.
+
+For `codex`, Aipal does **not** inject into the shared session:
+- bootstrap config
+- `memory.md`
+- thread memory
+- retrieval memory
+- long Telegram-specific output instructions
+
+Instead, it sends only:
+- the actual user text
+- the plain transcription of audio messages
+- minimal image/document context when attachments exist
+- punctual slash-command output if needed for that turn
+
+### Cron jobs
+Cron jobs are loaded from `~/.config/aipal/cron.json` (or `$XDG_CONFIG_HOME/aipal/cron.json`) and are sent to a single Telegram chat (the `cronChatId` configured in `config.json`).
+
+- `/cron chatid`: prints your chat ID (use this value as `cronChatId`).
+- `/cron list`: lists configured jobs.
+- `/cron reload`: reloads `cron.json` without restarting the bot.
+- `/cron run <jobId>`: triggers one job immediately using its configured target chat/topic.
+
+### Images in responses
+If the agent generates an image, save it under the image folder (default: OS temp under `aipal/images`) and reply with:
+```
+[[image:/absolute/path]]
+```
+The bot will send the image back to Telegram.
+
+### Documents in responses
+If the agent generates a document (or needs to send a file), save it under the documents folder (default: OS temp under `aipal/documents`) and reply with:
+```
+[[document:/absolute/path]]
+```
+The bot will send the document back to Telegram.
+
+## Configuration
+The only required environment variable is `TELEGRAM_BOT_TOKEN` in `.env`.
+
+Optional:
+- `AIPAL_SCRIPTS_DIR`: directory for slash scripts (default: `~/.config/aipal/scripts`)
+- `AIPAL_SCRIPT_TIMEOUT_MS`: timeout for slash scripts (default: 120000)
+- `AIPAL_AGENT_CWD`: default project directory used as working directory for agent commands
+- `AIPAL_WHISPER_CMD`: command used for audio transcription (default: `parakeet-mlx`)
+- `AIPAL_DROP_PENDING_UPDATES`: if not `false`, ignores queued Telegram updates on startup (default: `true`; recommended explicitly as `true` in production)
+- `AIPAL_MEMORY_CURATE_EVERY`: auto-curate memory after N captured events (default: 20)
+- `AIPAL_MEMORY_RETRIEVAL_LIMIT`: max retrieved memory lines injected per request (default: 8)
+- `CODEX_HOME`: Codex home used to read/write shared sessions (default fallback: `~/.codex`)
+- `ALLOWED_USERS`: comma-separated list of Telegram user IDs allowed to interact with the bot (if unset/empty, bot is open to everyone)
+  - Required for sensitive session/project commands (`/menu`, `/project`, `/projects`, `/sessions`, `/session`).
+
+## Config file (optional)
+The bot stores `/agent` in a JSON file at:
+`~/.config/aipal/config.json` (or `$XDG_CONFIG_HOME/aipal/config.json`).
+
+Example:
+```json
+{
+  "agent": "codex",
+  "cronChatId": 123456789
+}
+```
+
+See `docs/configuration.md` for details.
+
+## Bootstrap files (optional)
+If `soul.md`, `tools.md`, and/or `memory.md` exist next to `config.json`, their contents are injected into the first prompt of a new conversation for agents that use the enriched prompt path, in this order:
+1. `soul.md`
+2. `tools.md`
+3. `memory.md`
+
+Location:
+`~/.config/aipal/soul.md`, `~/.config/aipal/tools.md`, and `~/.config/aipal/memory.md` (or under `$XDG_CONFIG_HOME/aipal/`).
+
+### Automatic memory capture
+- Every interaction is captured automatically in per-thread files under `~/.config/aipal/memory/threads/*.jsonl` (or `$XDG_CONFIG_HOME/aipal/memory/threads/*.jsonl`).
+- Memory is isolated by `chatId:topicId:agentId` to avoid collisions across agents and topics.
+- `memory.md` remains the global curated memory. The bot can curate it automatically and via `/memory curate`.
+- Retrieval (iteration 1): lexical + recency retrieval over captured thread events is injected automatically only for agents using the enriched prompt path.
+- Captured events are indexed in SQLite (`memory/index.sqlite`) for faster and broader retrieval across topics.
+- `/memory status` shows memory health, `/memory tail` shows recent events, `/memory search` lets you inspect retrieval hits.
+
+## Security notes
+This bot executes local commands on your machine. Run it only on trusted hardware, keep the bot private, and avoid sharing the token.
+
+To restrict access, set `ALLOWED_USERS` in `.env` to a comma-separated list of Telegram user IDs. Unauthorized users are ignored (no reply).
+
+## How it works
+- Builds a shell command with a base64-encoded prompt to avoid quoting issues
+- Executes the command locally via `bash -lc`
+- For `codex`, resolves project/session per topic and reuses local Codex sessions
+- For existing Codex sessions, stores `thread_id` and uses `exec resume`
+- For new Codex sessions, creates a visible session and then reuses it from Telegram
+- Audio is downloaded, transcribed, then forwarded as text
+- Images are downloaded into the image folder and included in the prompt
+
+## Troubleshooting
+- `ENOENT` when transcribing audio: install `parakeet-mlx` and ensure it is on PATH, or set `AIPAL_WHISPER_CMD` to your command.
+- `Error processing response.`: check that `codex` is installed and accessible on PATH.
+- Projects or sessions do not appear: verify that `CODEX_HOME` points to the same Codex home used by Codex app.
+- Telegram `ECONNRESET`: usually transient network, retry.
+
+## License
+MIT. See `LICENSE`.
