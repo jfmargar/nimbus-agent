@@ -1,6 +1,8 @@
 # NimbusAgent
 
-NimbusAgent es una app de macOS en la barra de menús que empaqueta y ejecuta un bot de Telegram basado en **AIPAL** con runtime embebido (`Node` + código del agente). Su objetivo principal es operar sesiones de agentes desde Telegram, con integración real con **Codex** para compartir proyectos y conversaciones entre:
+NimbusAgent es una app de macOS en la barra de menús que empaqueta y ejecuta un bot de Telegram basado en **AIPAL** con runtime embebido (`Node` + código del agente). El repo ya incluye ese runtime bajo `Embedded/`, así que el flujo normal de trabajo no requiere un checkout separado de AIPAL.
+
+Su objetivo principal es operar sesiones de agentes desde Telegram, con integración real con **Codex** para compartir proyectos y conversaciones entre:
 
 - `Codex app -> bot de Telegram`
 - `bot de Telegram -> Codex app`
@@ -15,11 +17,16 @@ NimbusAgent es una app de macOS en la barra de menús que empaqueta y ejecuta un
   - `TELEGRAM_BOT_TOKEN` en Keychain.
   - resto de settings en `~/Library/Application Support/NimbusAgent/settings.json`.
 
-## Base del agente integrado
+## Qué hay en el repo
 
-Este proyecto integra AIPAL como runtime embebido.
+- `NimbusAgent/`: app macOS, UI, preflight y arranque del proceso embebido.
+- `Embedded/aipal/`: copia embebida y versionada del bot AIPAL que arranca la app.
+- `Embedded/runtime/node`: binario de Node que usa la app en tiempo de ejecución.
+- `scripts/prepare_embedded_runtime.sh`: script de mantenimiento para refrescar `Embedded/` desde una fuente externa de AIPAL y desde un Node local.
 
-- Repositorio original: [antoniolg/aipal](https://github.com/antoniolg/aipal)
+Origen del agente integrado:
+
+- repositorio original: [antoniolg/aipal](https://github.com/antoniolg/aipal)
 
 ## Cómo funciona con Codex
 
@@ -86,7 +93,13 @@ Para que NimbusAgent funcione correctamente en una máquina nueva, necesitas:
 ### Recomendados / opcionales según uso
 
 - un comando de transcripción compatible para audio
-- acceso a un runtime local de Node para preparar el runtime embebido
+
+### Solo para mantenimiento del runtime embebido
+
+Estos requisitos no son necesarios para compilar o ejecutar la app si `Embedded/` ya está poblado:
+
+- un runtime local de Node si quieres reemplazar `Embedded/runtime/node`
+- un checkout externo de AIPAL si quieres refrescar `Embedded/aipal`
 
 ## Dependencias externas
 
@@ -127,14 +140,11 @@ command -v parakeet-mlx
 
 Si no existe, el preflight muestra warning y la transcripción de audio puede fallar.
 
-### 3. Node embebido
+### 3. Runtime embebido versionado
 
-Nimbus no depende de un `node` global en tiempo de ejecución si has preparado correctamente `Embedded/runtime/node`, pero sí necesitas un binario de Node local al preparar el runtime embebido.
+La app no depende de un `node` global en tiempo de ejecución. Arranca directamente:
 
-### 4. Runtime embebido de AIPAL
-
-Nimbus arranca el entrypoint embebido en:
-
+- `Embedded/runtime/node`
 - `Embedded/aipal/src/index.js`
 
 El preflight valida:
@@ -146,7 +156,7 @@ El preflight valida:
 
 ## Configuración
 
-## General
+### General
 
 - `TELEGRAM_BOT_TOKEN`: token del bot de Telegram (se guarda en Keychain).
 - `ALLOWED_USERS` (CSV): restringe usuarios permitidos; si está vacío, el bot queda abierto.
@@ -159,7 +169,7 @@ Notas:
 - En el caso de `codex`, el proyecto activo real se resuelve por topic/sesión; `AIPAL_AGENT_CWD` actúa como valor por defecto, no como estado principal compartido.
 - Nimbus fuerza `CODEX_HOME` a `~/.codex` si no viene definido, para compartir sesiones con Codex app.
 
-## Avanzado
+### Avanzado
 
 Valores por defecto actuales:
 
@@ -207,7 +217,9 @@ Ejemplos de detalles útiles:
 
 ## Preparación del runtime embebido
 
-Antes de compilar Nimbus, prepara el contenido de `Embedded/`:
+Este paso no es obligatorio para el uso normal del repo. Úsalo solo si quieres refrescar el contenido de `Embedded/` desde un checkout externo de AIPAL o reemplazar el binario embebido de Node.
+
+Comando:
 
 ```bash
 ./scripts/prepare_embedded_runtime.sh
@@ -216,7 +228,7 @@ Antes de compilar Nimbus, prepara el contenido de `Embedded/`:
 El script:
 
 - copia AIPAL dentro de `Embedded/aipal`,
-- instala dependencias de producción si faltan,
+- instala dependencias de producción si faltan en el checkout fuente,
 - copia un binario local de Node en `Embedded/runtime/node`.
 
 Variables opcionales:
@@ -230,28 +242,42 @@ Pasos recomendados:
 
 1. Instalar `codex` y comprobar que está en `PATH`.
 2. Instalar o configurar el comando de transcripción que vayas a usar (`parakeet-mlx` por defecto).
-3. Preparar el runtime embebido:
+3. Abrir `NimbusAgent.xcodeproj` en Xcode.
+4. Compilar y ejecutar la app.
+5. Abrir **Configuración** y rellenar:
+   - `TELEGRAM_BOT_TOKEN`
+   - `ALLOWED_USERS`
+   - `AIPAL_AGENT_CWD` si quieres un cwd por defecto
+   - `AIPAL_WHISPER_CMD` si no usas `parakeet-mlx`
+6. Ejecutar **Validar**.
+7. Arrancar el agente desde el menú.
+
+Solo si `Embedded/` estuviera vacío, corrupto o quieres sincronizarlo con otra versión de AIPAL, ejecuta antes:
 
 ```bash
 ./scripts/prepare_embedded_runtime.sh
 ```
 
-4. Abrir `NimbusAgent.xcodeproj` en Xcode.
-5. Compilar y ejecutar la app.
-6. Abrir **Configuración** y rellenar:
-   - `TELEGRAM_BOT_TOKEN`
-   - `ALLOWED_USERS`
-   - `AIPAL_AGENT_CWD` si quieres un cwd por defecto
-   - `AIPAL_WHISPER_CMD` si no usas `parakeet-mlx`
-7. Ejecutar **Validar**.
-8. Arrancar el agente desde el menú.
-
 ## Desarrollo
 
-1. Preparar runtime embebido.
-2. Abrir `NimbusAgent.xcodeproj` en Xcode.
-3. Compilar y ejecutar el target de la app.
-4. Usar la vista de diagnóstico para revisar logs del agente embebido.
+### App macOS
+
+1. Abrir `NimbusAgent.xcodeproj` en Xcode.
+2. Compilar y ejecutar el target de la app.
+3. Usar la vista de diagnóstico para revisar logs del agente embebido.
+
+### Runtime embebido de AIPAL
+
+Si quieres trabajar directamente sobre el bot embebido:
+
+1. Entra en `Embedded/aipal`.
+2. Usa Node 24+.
+3. Ejecuta `npm start` para levantarlo fuera de la app.
+
+Notas:
+
+- ese runtime sigue asumiendo herramientas tipo Unix (`bash`, `python3`, `sqlite3`) para varias rutas de ejecución;
+- el script `prepare_embedded_runtime.sh` es un flujo de mantenimiento, no un prerrequisito para editar la app cuando `Embedded/` ya está correcto.
 
 ## Notas operativas
 

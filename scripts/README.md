@@ -1,6 +1,17 @@
-# Embedded Runtime Prep
+# Embedded Runtime Refresh
 
-Run this before building Nimbus when `Embedded/` is empty or stale:
+Use this only when you want to refresh the vendored runtime in `Embedded/`.
+
+Normal app builds do not require this step if the repo already contains:
+
+- `Embedded/aipal`
+- `Embedded/runtime/node`
+
+Typical cases where this script makes sense:
+
+- `Embedded/` is missing or corrupted
+- you want to sync `Embedded/aipal` from another AIPAL checkout
+- you want to replace the embedded Node binary
 
 ```bash
 ./scripts/prepare_embedded_runtime.sh
@@ -30,7 +41,8 @@ command -v parakeet-mlx
 ```
 
 Notes:
-- `prepare_embedded_runtime.sh` prepares the embedded runtime only; it does not install `codex`.
+- `prepare_embedded_runtime.sh` is a maintenance helper; it is not the standard startup path for this repo.
+- It prepares the embedded runtime only; it does not install `codex`.
 - If the transcription command is missing, Nimbus can still run, but audio transcription may fail.
 
 Optional environment variables:

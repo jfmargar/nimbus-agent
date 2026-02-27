@@ -4,6 +4,10 @@
 
 ![Aipal](docs/assets/aipal.jpg)
 
+In this repository, this directory is the embedded Aipal runtime used by NimbusAgent. The macOS app launches `src/index.js` with the bundled Node runtime in `../runtime/node`.
+
+If you are working on NimbusAgent as an app, prefer the top-level [README](../../README.md) for setup and operational guidance. The rest of this document is still the standalone bot documentation for running Aipal directly.
+
 Minimal Telegram bot that forwards messages to a local CLI agent (Codex by default). Each message is executed locally and the output is sent back to the chat.
 
 ## What it does
