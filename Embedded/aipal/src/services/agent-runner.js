@@ -1,5 +1,6 @@
 const fs = require('fs/promises');
 const path = require('path');
+const { createCodexSdkClient: defaultCreateCodexSdkClient } = require('./codex-sdk-client');
 
 function normalizeProjectCwd(value) {
   const trimmed = String(value || '').trim();
@@ -26,9 +27,11 @@ function createAgentRunner(options) {
     buildMemoryRetrievalContext,
     buildPrompt,
     buildSharedSessionPrompt,
+    codexApprovalMode,
+    codexSandboxMode,
+    createCodexSdkClient = defaultCreateCodexSdkClient,
     documentDir,
     execLocal,
-    execLocalWithPty,
     fileInstructionsEvery,
     findNewestSessionDiff,
     getAgent,
@@ -54,8 +57,13 @@ function createAgentRunner(options) {
     defaultTimeZone,
     getDefaultAgentCwd,
     listLocalCodexSessions,
+    wrapCommandWithPty,
   } = options;
-  const interactiveNewSessionTimeoutMs = Math.min(agentTimeoutMs, 45000);
+  const codexSdkClient = createCodexSdkClient({
+    agentTimeoutMs,
+    approvalMode: codexApprovalMode,
+    sandboxMode: codexSandboxMode,
+  });
 
   async function resolveLatestCodexSessionId(cwd) {
     if (typeof listLocalCodexSessions !== 'function') return '';
@@ -102,35 +110,6 @@ function createAgentRunner(options) {
 
   function isSharedCodexSession(agent) {
     return String(agent?.id || '').trim().toLowerCase() === 'codex';
-  }
-
-  function isUsefulInteractiveReply(text) {
-    const normalized = String(text || '').replace(/\s+/g, ' ').trim();
-    if (!normalized) return false;
-    if (normalized.length < 8) return false;
-    if (/^Tip:/i.test(normalized)) return false;
-    if (/^Usage:/i.test(normalized)) return false;
-    if (/^For more information/i.test(normalized)) return false;
-    if (/Continue anyway\?/i.test(normalized)) return false;
-    if (/interactive TUI/i.test(normalized)) return false;
-    if (/^[?[\]0-9;<>uhtlrmc\\]+$/.test(normalized)) return false;
-    return true;
-  }
-
-  function buildInteractiveCreationReply({ executionCwd, parsedText, execError, candidateId }) {
-    const normalizedText = String(parsedText || '').trim();
-    if (!candidateId) return '';
-    if (execError?.code === 'ETIMEDOUT') {
-      return `Sesión creada y conectada en ${path.basename(
-        executionCwd
-      )}.\nA partir del próximo mensaje continuaré esa sesión.`;
-    }
-    if (isUsefulInteractiveReply(normalizedText)) {
-      return normalizedText;
-    }
-    return `Sesión creada y conectada en ${path.basename(
-      executionCwd
-    )}.\nA partir del próximo mensaje continuaré esa sesión.`;
   }
 
   async function syncThreadAndProject({
@@ -274,104 +253,126 @@ function createAgentRunner(options) {
     return null;
   }
 
-  async function runCodexNewSessionInteractive({
+  function logCodexSdkEvent(baseMeta, event) {
+    if (!event || typeof event !== 'object') return;
+    const fragments = [
+      'Agent event',
+      `agent=codex`,
+      `mode=sdk`,
+      `chat=${baseMeta.chatId}`,
+      `topic=${baseMeta.topicId || 'root'}`,
+      `cwd=${baseMeta.executionCwd || '(default)'}`,
+    ];
+    if (baseMeta.threadId) {
+      fragments.push(`threadId=${baseMeta.threadId}`);
+    }
+    if (event.conversationId) {
+      fragments.push(`conversationId=${event.conversationId}`);
+    }
+    if (event.threadId) {
+      fragments.push(`eventThreadId=${event.threadId}`);
+    }
+    if (event.phase) {
+      fragments.push(`phase=${event.phase}`);
+    }
+    if (event.errorKind) {
+      fragments.push(`errorKind=${event.errorKind}`);
+    }
+    if (event.tool) {
+      fragments.push(`tool=${String(event.tool).replace(/\s+/g, '_')}`);
+    }
+    console.info(fragments.join(' '));
+  }
+
+  async function runCodexTurn({
     agent,
     chatId,
     topicId,
     effectiveAgentId,
     executionCwd,
     finalPrompt,
+    imagePaths = [],
     model,
     thinking,
     threadKey,
     threads,
+    threadId,
+    onEvent,
   }) {
-    if (typeof agent.buildInteractiveNewSessionCommand !== 'function') {
-      throw new Error(
-        'No pude crear una sesión visible de Codex para este proyecto. Puedes reintentar o usar Continuar última sesión.'
-      );
-    }
-
-    const snapshot = await buildSessionCreationSnapshot(executionCwd);
+    const normalizedThreadId = String(threadId || '').trim();
+    const snapshot = normalizedThreadId
+      ? null
+      : await buildSessionCreationSnapshot(executionCwd);
+    let detectionSource = 'none';
     console.info(
       `Agent start chat=${chatId} topic=${topicId || 'root'} agent=${agent.id} cwd=${
         executionCwd || '(default)'
-      } thread=new mode=new-interactive-cli startedAt=${snapshot.startedAt} sessionSnapshotCount=${
-        snapshot.sessionSnapshotCount
-      }`
+      } thread=${normalizedThreadId || 'new'} mode=sdk startedAt=${
+        snapshot?.startedAt || Date.now()
+      } sessionSnapshotCount=${snapshot?.sessionSnapshotCount || 0}`
     );
 
-    const promptBase64 = Buffer.from(finalPrompt, 'utf8').toString('base64');
-    const promptExpression = '"$PROMPT"';
-    const interactiveCmd = agent.buildInteractiveNewSessionCommand({
-      prompt: finalPrompt,
-      promptExpression,
-      cwd: executionCwd,
-      thinking,
-      model,
-    });
-    const command = [
-      `PROMPT_B64=${shellQuote(promptBase64)};`,
-      'PROMPT=$(printf %s "$PROMPT_B64" | base64 --decode);',
-      'export TERM=xterm-256color;',
-      `${interactiveCmd}`,
-    ].join(' ');
-
     const startedAt = Date.now();
-    let output = '';
-    let execError;
+    let result;
     try {
-      output = await execLocalWithPty(command, {
-        ...buildExecOptions({}, executionCwd),
-        timeout: interactiveNewSessionTimeoutMs,
-        maxBuffer: agentMaxBuffer,
+      result = await codexSdkClient.runTurn({
+        cwd: executionCwd,
+        imagePaths,
+        model,
+        onEvent: async (event) => {
+          logCodexSdkEvent(
+            {
+              chatId,
+              topicId,
+              executionCwd,
+              threadId: normalizedThreadId,
+            },
+            event
+          );
+          if (typeof onEvent === 'function') {
+            await onEvent(event);
+          }
+        },
+        prompt: finalPrompt,
+        thinking,
+        threadId: normalizedThreadId,
+        timeoutMs: agentTimeoutMs,
       });
-    } catch (err) {
-      execError = err;
-      if (err && typeof err.stdout === 'string') {
-        output = err.stdout;
-      }
     } finally {
       const elapsedMs = Date.now() - startedAt;
       console.info(
-        `Agent finished chat=${chatId} topic=${topicId || 'root'} durationMs=${elapsedMs} mode=new-interactive-cli`
+        `Agent finished chat=${chatId} topic=${topicId || 'root'} durationMs=${elapsedMs} mode=sdk`
       );
     }
 
-    const parsed = typeof agent.parseInteractiveOutput === 'function'
-      ? agent.parseInteractiveOutput(output)
-      : { text: String(output || '').trim(), sawText: Boolean(String(output || '').trim()) };
-    if (execError || !String(parsed?.text || '').trim()) {
-      const preview = String(output || '')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 400);
-      if (preview) {
-        console.warn(
-          `Agent interactive new-session output preview chat=${chatId} topic=${
-            topicId || 'root'
-          } preview=${preview}`
+    let candidateId = String(result?.threadId || result?.conversationId || '').trim();
+    if (!candidateId && snapshot) {
+      const resolved = await resolveNewCliSessionId(snapshot, executionCwd);
+      detectionSource = String(resolved?.detectionSource || 'none');
+      const sourceType = String(resolved?.session?.source || '').trim().toLowerCase() || 'unknown';
+      candidateId = String(resolved?.session?.id || '').trim();
+      console.info(
+        `Agent new-session resolve chat=${chatId} topic=${topicId || 'root'} candidateIds=${
+          candidateId || '(none)'
+        } detectionSource=${detectionSource} sourceTypeIfKnown=${sourceType}`
+      );
+      if (!candidateId && detectionSource.includes('ambiguous')) {
+        throw new Error(
+          'No pude asociar de forma segura la nueva sesion visible de Codex. Puedes reintentar o usar Continuar ultima sesion.'
         );
       }
     }
-    const resolved = await resolveNewCliSessionId(snapshot, executionCwd);
-    const candidateId = String(resolved?.session?.id || '').trim();
-    const detectionSource = String(resolved?.detectionSource || 'none');
-    const sourceType = String(resolved?.session?.source || '').trim().toLowerCase() || 'unknown';
-    console.info(
-      `Agent new-session resolve chat=${chatId} topic=${topicId || 'root'} candidateIds=${
-        candidateId || '(none)'
-      } detectionSource=${detectionSource} sourceTypeIfKnown=${sourceType}`
-    );
 
     if (!candidateId) {
       if (detectionSource.includes('ambiguous')) {
         throw new Error(
-          'No pude asociar de forma segura la nueva sesión visible de Codex. Puedes reintentar o usar Continuar última sesión.'
+          'No pude asociar de forma segura la nueva sesion visible de Codex. Puedes reintentar o usar Continuar ultima sesion.'
         );
       }
       throw new Error(
-        'No pude crear una sesión visible de Codex para este proyecto. Puedes reintentar o usar Continuar última sesión.'
+        normalizedThreadId
+          ? 'No pude reanudar la sesion de Codex indicada. Usa Projects para elegir otra sesion.'
+          : 'No pude crear una sesion visible de Codex para este proyecto. Puedes reintentar o usar Continuar ultima sesion.'
       );
     }
 
@@ -385,27 +386,12 @@ function createAgentRunner(options) {
       threads,
     });
 
-    if (execError) {
-      console.warn(
-        `Agent interactive new-session exited non-zero chat=${chatId} topic=${topicId || 'root'} code=${
-          execError.code || 'unknown'
-        } timeoutMs=${interactiveNewSessionTimeoutMs}`
-      );
-    }
-    const reply = buildInteractiveCreationReply({
-      executionCwd,
-      parsedText: parsed?.text,
-      execError,
-      candidateId,
-    });
-    if (execError?.code === 'ETIMEDOUT') {
-      console.info(
-        `Agent interactive session created successfully despite timeout chat=${chatId} topic=${
-          topicId || 'root'
-        } threadId=${candidateId} cwd=${executionCwd} replyMode=confirmation`
-      );
-    }
-    return reply;
+    return {
+      ...result,
+      threadId: candidateId,
+      conversationId: String(result?.conversationId || candidateId).trim() || candidateId,
+      text: String(result?.text || '').trim(),
+    };
   }
 
   async function runAgentOneShot(prompt) {
@@ -417,6 +403,16 @@ function createAgentRunner(options) {
       promptText = prefixTextWithTimestamp(promptText, {
         timeZone: defaultTimeZone,
       });
+    }
+    if (agent.id === 'codex') {
+      const result = await codexSdkClient.runTurn({
+        cwd: typeof getDefaultAgentCwd === 'function' ? getDefaultAgentCwd() : '',
+        model: getGlobalModels()[globalAgent],
+        prompt: promptText,
+        thinking,
+        timeoutMs: agentTimeoutMs,
+      });
+      return result.text;
     }
     const promptBase64 = Buffer.from(promptText, 'utf8').toString('base64');
     const promptExpression = '"$PROMPT"';
@@ -476,8 +472,14 @@ function createAgentRunner(options) {
   }
 
   async function runAgentForChat(chatId, prompt, runOptions = {}) {
-    const { topicId, agentId: overrideAgentId, imagePaths, scriptContext, documentPaths } =
-      runOptions;
+    const {
+      topicId,
+      agentId: overrideAgentId,
+      imagePaths,
+      scriptContext,
+      documentPaths,
+      onEvent,
+    } = runOptions;
     const effectiveAgentId = resolveEffectiveAgentId(
       chatId,
       topicId,
@@ -583,19 +585,23 @@ function createAgentRunner(options) {
     }
     const model = getGlobalModels()[effectiveAgentId];
 
-    if (agent.id === 'codex' && !threadId) {
-      return runCodexNewSessionInteractive({
+    if (agent.id === 'codex') {
+      const result = await runCodexTurn({
         agent,
         chatId,
         topicId,
         effectiveAgentId,
         executionCwd,
         finalPrompt,
+        imagePaths: imagePaths || [],
         model,
         thinking,
         threadKey,
         threads,
+        threadId,
+        onEvent,
       });
+      return result.text;
     }
 
     const promptBase64 = Buffer.from(finalPrompt, 'utf8').toString('base64');

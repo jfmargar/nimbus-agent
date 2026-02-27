@@ -1,9 +1,11 @@
 function registerTextHandler(options) {
   const {
     bot,
+    beginProgress,
     buildMemoryThreadKey,
     buildTopicKey,
     captureMemoryEvent,
+    codexProgressUpdatesEnabled,
     consumeScriptContext,
     enqueue,
     extractMemoryText,
@@ -13,12 +15,39 @@ function registerTextHandler(options) {
     parseSlashCommand,
     replyWithError,
     replyWithResponse,
+    renderProgressEvent,
     resolveEffectiveAgentId,
     runAgentForChat,
     runScriptCommand,
     scriptManager,
     startTyping,
   } = options;
+
+  async function createExecutionFeedback(ctx, effectiveAgentId) {
+    const useProgress =
+      codexProgressUpdatesEnabled &&
+      effectiveAgentId === 'codex' &&
+      typeof beginProgress === 'function';
+    if (!useProgress) {
+      return {
+        onEvent: undefined,
+        progress: null,
+        stopTyping: startTyping(ctx),
+      };
+    }
+    const progress = await beginProgress(ctx, 'Codex: iniciando sesion...');
+    return {
+      onEvent: async (event) => {
+        if (!progress || event?.type === 'output_text') return;
+        const message = renderProgressEvent(event);
+        if (message) {
+          await progress.update(message);
+        }
+      },
+      progress,
+      stopTyping: () => {},
+    };
+  }
 
   bot.on('text', (ctx) => {
     const chatId = ctx.chat.id;
@@ -47,13 +76,17 @@ function registerTextHandler(options) {
         return;
       }
       enqueue(topicKey, async () => {
-        const stopTyping = startTyping(ctx);
         const effectiveAgentId = resolveEffectiveAgentId(chatId, topicId);
         const memoryThreadKey = buildMemoryThreadKey(
           chatId,
           topicId,
           effectiveAgentId
         );
+        let feedback = {
+          onEvent: undefined,
+          progress: null,
+          stopTyping: startTyping(ctx),
+        };
         try {
           await captureMemoryEvent({
             threadKey: memoryThreadKey,
@@ -77,6 +110,8 @@ function registerTextHandler(options) {
               ? scriptMeta.llm.prompt.trim()
               : '';
           if (llmPrompt) {
+            feedback.stopTyping();
+            feedback = await createExecutionFeedback(ctx, effectiveAgentId);
             const scriptContext = formatScriptContext({
               name: slash.name,
               output,
@@ -84,6 +119,7 @@ function registerTextHandler(options) {
             const response = await runAgentForChat(chatId, llmPrompt, {
               topicId,
               scriptContext,
+              onEvent: feedback.onEvent,
             });
             await captureMemoryEvent({
               threadKey: memoryThreadKey,
@@ -94,7 +130,10 @@ function registerTextHandler(options) {
               kind: 'text',
               text: extractMemoryText(response),
             });
-            stopTyping();
+            feedback.stopTyping();
+            if (feedback.progress) {
+              await feedback.progress.finish();
+            }
             await replyWithResponse(ctx, response);
             return;
           }
@@ -108,11 +147,14 @@ function registerTextHandler(options) {
             kind: 'text',
             text: extractMemoryText(output),
           });
-          stopTyping();
+          feedback.stopTyping();
           await replyWithResponse(ctx, output);
         } catch (err) {
           console.error(err);
-          stopTyping();
+          feedback.stopTyping();
+          if (feedback.progress) {
+            await feedback.progress.fail('Codex: error durante la ejecucion.');
+          }
           await replyWithError(ctx, `Error running /${slash.name}.`, err);
         }
       });
@@ -120,13 +162,13 @@ function registerTextHandler(options) {
     }
 
     enqueue(topicKey, async () => {
-      const stopTyping = startTyping(ctx);
       const effectiveAgentId = resolveEffectiveAgentId(chatId, topicId);
       const memoryThreadKey = buildMemoryThreadKey(
         chatId,
         topicId,
         effectiveAgentId
       );
+      const feedback = await createExecutionFeedback(ctx, effectiveAgentId);
       try {
         await captureMemoryEvent({
           threadKey: memoryThreadKey,
@@ -141,6 +183,7 @@ function registerTextHandler(options) {
         const response = await runAgentForChat(chatId, text, {
           topicId,
           scriptContext,
+          onEvent: feedback.onEvent,
         });
         await captureMemoryEvent({
           threadKey: memoryThreadKey,
@@ -151,11 +194,17 @@ function registerTextHandler(options) {
           kind: 'text',
           text: extractMemoryText(response),
         });
-        stopTyping();
+        feedback.stopTyping();
+        if (feedback.progress) {
+          await feedback.progress.finish();
+        }
         await replyWithResponse(ctx, response);
       } catch (err) {
         console.error(err);
-        stopTyping();
+        feedback.stopTyping();
+        if (feedback.progress) {
+          await feedback.progress.fail('Codex: error durante la ejecucion.');
+        }
         await replyWithError(ctx, 'Error processing response.', err);
       }
     });

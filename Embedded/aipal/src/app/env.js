@@ -7,6 +7,14 @@ function readNumberEnv(raw, fallback) {
   return value;
 }
 
+function readBooleanEnv(raw, fallback) {
+  const normalized = String(raw || '').trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+}
+
 const WHISPER_CMD = process.env.AIPAL_WHISPER_CMD || 'parakeet-mlx';
 const WHISPER_TIMEOUT_MS = 300000;
 const WHISPER_MODEL = 'mlx-community/whisper-large-v3-turbo';
@@ -38,6 +46,14 @@ const AGENT_MAX_BUFFER = readNumberEnv(
 const AGENT_CWD = process.env.AIPAL_AGENT_CWD
   ? path.resolve(process.env.AIPAL_AGENT_CWD)
   : '';
+const CODEX_APPROVAL_MODE =
+  process.env.AIPAL_CODEX_APPROVAL_MODE || 'never';
+const CODEX_SANDBOX_MODE =
+  process.env.AIPAL_CODEX_SANDBOX_MODE || 'workspace-write';
+const CODEX_PROGRESS_UPDATES = readBooleanEnv(
+  process.env.AIPAL_CODEX_PROGRESS_UPDATES,
+  true
+);
 const FILE_INSTRUCTIONS_EVERY = readNumberEnv(
   process.env.AIPAL_FILE_INSTRUCTIONS_EVERY,
   10
@@ -60,6 +76,9 @@ module.exports = {
   AGENT_MAX_BUFFER,
   AGENT_TIMEOUT_MS,
   AGENT_CWD,
+  CODEX_APPROVAL_MODE,
+  CODEX_PROGRESS_UPDATES,
+  CODEX_SANDBOX_MODE,
   DOCUMENT_CLEANUP_INTERVAL_MS,
   DOCUMENT_DIR,
   DOCUMENT_TTL_HOURS,
@@ -77,5 +96,6 @@ module.exports = {
   WHISPER_LANGUAGE,
   WHISPER_MODEL,
   WHISPER_TIMEOUT_MS,
+  readBooleanEnv,
   readNumberEnv,
 };

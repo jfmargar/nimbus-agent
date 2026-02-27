@@ -1,9 +1,11 @@
 function registerMediaHandlers(options) {
   const {
     bot,
+    beginProgress,
     buildMemoryThreadKey,
     buildTopicKey,
     captureMemoryEvent,
+    codexProgressUpdatesEnabled,
     documentDir,
     downloadTelegramFile,
     extractMemoryText,
@@ -16,12 +18,39 @@ function registerMediaHandlers(options) {
     replyWithError,
     replyWithResponse,
     replyWithTranscript,
+    renderProgressEvent,
     resolveEffectiveAgentId,
     runAgentForChat,
     safeUnlink,
     startTyping,
     transcribeAudio,
   } = options;
+
+  async function createExecutionFeedback(ctx, effectiveAgentId) {
+    const useProgress =
+      codexProgressUpdatesEnabled &&
+      effectiveAgentId === 'codex' &&
+      typeof beginProgress === 'function';
+    if (!useProgress) {
+      return {
+        onEvent: undefined,
+        progress: null,
+        stopTyping: startTyping(ctx),
+      };
+    }
+    const progress = await beginProgress(ctx, 'Codex: iniciando sesion...');
+    return {
+      onEvent: async (event) => {
+        if (!progress || event?.type === 'output_text') return;
+        const message = renderProgressEvent(event);
+        if (message) {
+          await progress.update(message);
+        }
+      },
+      progress,
+      stopTyping: () => {},
+    };
+  }
 
   bot.on(['voice', 'audio', 'document'], (ctx, next) => {
     const chatId = ctx.chat.id;
@@ -31,13 +60,17 @@ function registerMediaHandlers(options) {
     if (!payload) return next();
 
     enqueue(topicKey, async () => {
-      const stopTyping = startTyping(ctx);
       const effectiveAgentId = resolveEffectiveAgentId(chatId, topicId);
       const memoryThreadKey = buildMemoryThreadKey(
         chatId,
         topicId,
         effectiveAgentId
       );
+      let feedback = {
+        onEvent: undefined,
+        progress: null,
+        stopTyping: startTyping(ctx),
+      };
       let audioPath;
       let transcriptPath;
       try {
@@ -61,7 +94,12 @@ function registerMediaHandlers(options) {
           kind: 'audio',
           text,
         });
-        const response = await runAgentForChat(chatId, text, { topicId });
+        feedback.stopTyping();
+        feedback = await createExecutionFeedback(ctx, effectiveAgentId);
+        const response = await runAgentForChat(chatId, text, {
+          topicId,
+          onEvent: feedback.onEvent,
+        });
         await captureMemoryEvent({
           threadKey: memoryThreadKey,
           chatId,
@@ -71,9 +109,16 @@ function registerMediaHandlers(options) {
           kind: 'text',
           text: extractMemoryText(response),
         });
+        if (feedback.progress) {
+          await feedback.progress.finish();
+        }
         await replyWithResponse(ctx, response);
       } catch (err) {
         console.error(err);
+        feedback.stopTyping();
+        if (feedback.progress) {
+          await feedback.progress.fail('Codex: error durante la ejecucion.');
+        }
         if (err && err.code === 'ENOENT') {
           await replyWithError(
             ctx,
@@ -84,7 +129,7 @@ function registerMediaHandlers(options) {
           await replyWithError(ctx, 'Error processing audio.', err);
         }
       } finally {
-        stopTyping();
+        feedback.stopTyping();
         await safeUnlink(audioPath);
         await safeUnlink(transcriptPath);
       }
@@ -99,13 +144,17 @@ function registerMediaHandlers(options) {
     if (!payload) return next();
 
     enqueue(topicKey, async () => {
-      const stopTyping = startTyping(ctx);
       const effectiveAgentId = resolveEffectiveAgentId(chatId, topicId);
       const memoryThreadKey = buildMemoryThreadKey(
         chatId,
         topicId,
         effectiveAgentId
       );
+      let feedback = {
+        onEvent: undefined,
+        progress: null,
+        stopTyping: startTyping(ctx),
+      };
       let imagePath;
       try {
         imagePath = await downloadTelegramFile(ctx, payload, {
@@ -124,9 +173,12 @@ function registerMediaHandlers(options) {
           kind: 'image',
           text: prompt,
         });
+        feedback.stopTyping();
+        feedback = await createExecutionFeedback(ctx, effectiveAgentId);
         const response = await runAgentForChat(chatId, prompt, {
           topicId,
           imagePaths: [imagePath],
+          onEvent: feedback.onEvent,
         });
         await captureMemoryEvent({
           threadKey: memoryThreadKey,
@@ -137,12 +189,19 @@ function registerMediaHandlers(options) {
           kind: 'text',
           text: extractMemoryText(response),
         });
+        if (feedback.progress) {
+          await feedback.progress.finish();
+        }
         await replyWithResponse(ctx, response);
       } catch (err) {
         console.error(err);
+        feedback.stopTyping();
+        if (feedback.progress) {
+          await feedback.progress.fail('Codex: error durante la ejecucion.');
+        }
         await replyWithError(ctx, 'Error processing image.', err);
       } finally {
-        stopTyping();
+        feedback.stopTyping();
       }
     });
   });
@@ -156,13 +215,17 @@ function registerMediaHandlers(options) {
     if (!payload) return;
 
     enqueue(topicKey, async () => {
-      const stopTyping = startTyping(ctx);
       const effectiveAgentId = resolveEffectiveAgentId(chatId, topicId);
       const memoryThreadKey = buildMemoryThreadKey(
         chatId,
         topicId,
         effectiveAgentId
       );
+      let feedback = {
+        onEvent: undefined,
+        progress: null,
+        stopTyping: startTyping(ctx),
+      };
       let documentPath;
       try {
         documentPath = await downloadTelegramFile(ctx, payload, {
@@ -181,9 +244,12 @@ function registerMediaHandlers(options) {
           kind: 'document',
           text: prompt,
         });
+        feedback.stopTyping();
+        feedback = await createExecutionFeedback(ctx, effectiveAgentId);
         const response = await runAgentForChat(chatId, prompt, {
           topicId,
           documentPaths: [documentPath],
+          onEvent: feedback.onEvent,
         });
         await captureMemoryEvent({
           threadKey: memoryThreadKey,
@@ -194,12 +260,19 @@ function registerMediaHandlers(options) {
           kind: 'text',
           text: extractMemoryText(response),
         });
+        if (feedback.progress) {
+          await feedback.progress.finish();
+        }
         await replyWithResponse(ctx, response);
       } catch (err) {
         console.error(err);
+        feedback.stopTyping();
+        if (feedback.progress) {
+          await feedback.progress.fail('Codex: error durante la ejecucion.');
+        }
         await replyWithError(ctx, 'Error processing document.', err);
       } finally {
-        stopTyping();
+        feedback.stopTyping();
       }
     });
   });

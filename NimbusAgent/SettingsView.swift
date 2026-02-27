@@ -51,6 +51,21 @@ struct SettingsView: View {
             Form {
                 TextField("AIPAL_WHISPER_CMD", text: $model.settings.whisperCmd)
 
+                Picker("AIPAL_CODEX_APPROVAL_MODE", selection: $model.settings.codexApprovalMode) {
+                    Text("never").tag("never")
+                    Text("on-request").tag("on-request")
+                    Text("on-failure").tag("on-failure")
+                    Text("untrusted").tag("untrusted")
+                }
+
+                Picker("AIPAL_CODEX_SANDBOX_MODE", selection: $model.settings.codexSandboxMode) {
+                    Text("read-only").tag("read-only")
+                    Text("workspace-write").tag("workspace-write")
+                    Text("danger-full-access").tag("danger-full-access")
+                }
+
+                Toggle("AIPAL_CODEX_PROGRESS_UPDATES", isOn: $model.settings.codexProgressUpdates)
+
                 TextField("AIPAL_SCRIPT_TIMEOUT_MS", value: $model.settings.scriptTimeoutMs, format: .number)
                 TextField("AIPAL_AGENT_TIMEOUT_MS", value: $model.settings.agentTimeoutMs, format: .number)
                 TextField("AIPAL_AGENT_MAX_BUFFER", value: $model.settings.agentMaxBuffer, format: .number)

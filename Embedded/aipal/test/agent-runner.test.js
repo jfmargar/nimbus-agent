@@ -46,53 +46,33 @@ function createRunnerHarness(overrides = {}) {
   const threads = new Map();
   const threadTurns = new Map();
   const setProjectCalls = [];
+  const sdkRequests = [];
   let execCalls = 0;
-  let execWithPtyCalls = 0;
-  let lastExecWithPtyOptions = null;
   let bootstrapCalls = 0;
   let retrievalCalls = 0;
-  let lastBuildPromptArgs = null;
   let lastBuildSharedPromptArgs = null;
 
   const codexAgent = {
     id: 'codex',
     label: 'codex',
     mergeStderr: false,
+    transport: 'sdk',
     buildCommand: () => 'codex exec resume thread-id',
-    buildInteractiveNewSessionCommand: () => 'codex interactive new',
     parseOutput: () => ({ text: 'respuesta resume', threadId: 'thread-id', sawJson: true }),
-    parseInteractiveOutput: (output) => {
-      if (typeof overrides.parseInteractiveOutput === 'function') {
-        return overrides.parseInteractiveOutput(output);
-      }
-      return { text: 'respuesta nueva', sawText: true };
-    },
   };
 
   const runner = createAgentRunner({
     agentMaxBuffer: 1024 * 1024,
     agentTimeoutMs: 1000,
-    buildBootstrapContext: async (...args) => {
+    buildBootstrapContext: async () => {
       bootstrapCalls += 1;
-      if (typeof overrides.buildBootstrapContext === 'function') {
-        return overrides.buildBootstrapContext(...args);
-      }
       return 'bootstrap';
     },
-    buildMemoryRetrievalContext: async (...args) => {
+    buildMemoryRetrievalContext: async () => {
       retrievalCalls += 1;
-      if (typeof overrides.buildMemoryRetrievalContext === 'function') {
-        return overrides.buildMemoryRetrievalContext(...args);
-      }
       return '';
     },
-    buildPrompt: (...args) => {
-      lastBuildPromptArgs = args;
-      if (typeof overrides.buildPrompt === 'function') {
-        return overrides.buildPrompt(...args);
-      }
-      return args[0];
-    },
+    buildPrompt: (prompt) => prompt,
     buildSharedSessionPrompt: (...args) => {
       lastBuildSharedPromptArgs = args;
       if (typeof overrides.buildSharedSessionPrompt === 'function') {
@@ -100,6 +80,29 @@ function createRunnerHarness(overrides = {}) {
       }
       return args[0];
     },
+    codexApprovalMode: 'never',
+    codexSandboxMode: 'workspace-write',
+    createCodexSdkClient: () => ({
+      runTurn: async (request) => {
+        sdkRequests.push(request);
+        if (typeof overrides.runSdkTurn === 'function') {
+          return overrides.runSdkTurn(request);
+        }
+        if (typeof request.onEvent === 'function') {
+          await request.onEvent({
+            type: 'status',
+            phase: 'starting',
+            message: 'Codex: iniciando sesion...',
+          });
+        }
+        return {
+          text: 'respuesta sdk',
+          threadId: 'thread-sdk',
+          conversationId: 'thread-sdk',
+          events: [],
+        };
+      },
+    }),
     documentDir: '/tmp',
     execLocal: async () => {
       execCalls += 1;
@@ -107,14 +110,6 @@ function createRunnerHarness(overrides = {}) {
         return overrides.execLocal();
       }
       return '{"type":"thread.started","thread_id":"thread-id"}';
-    },
-    execLocalWithPty: async (...args) => {
-      execWithPtyCalls += 1;
-      lastExecWithPtyOptions = args[1] || null;
-      if (typeof overrides.execLocalWithPty === 'function') {
-        return overrides.execLocalWithPty(...args);
-      }
-      return 'respuesta nueva';
     },
     fileInstructionsEvery: 3,
     findNewestSessionDiff: async () => {
@@ -174,41 +169,39 @@ function createRunnerHarness(overrides = {}) {
     },
     threadTurns,
     defaultTimeZone: 'Europe/Madrid',
+    wrapCommandWithPty: (value) => value,
   });
 
   return {
     projectDir,
     runner,
-    threads,
-    threadTurns,
+    sdkRequests,
     setProjectCalls,
-    getExecCalls: () => execCalls,
-    getExecWithPtyCalls: () => execWithPtyCalls,
-    getLastExecWithPtyOptions: () => lastExecWithPtyOptions,
+    threads,
     getBootstrapCalls: () => bootstrapCalls,
-    getRetrievalCalls: () => retrievalCalls,
-    getLastBuildPromptArgs: () => lastBuildPromptArgs,
+    getExecCalls: () => execCalls,
     getLastBuildSharedPromptArgs: () => lastBuildSharedPromptArgs,
+    getRetrievalCalls: () => retrievalCalls,
   };
 }
 
-test('runAgentForChat creates visible codex sessions with interactive CLI when no thread exists', async () => {
+test('runAgentForChat creates visible codex sessions with sdk when no thread exists', async () => {
   const harness = createRunnerHarness();
 
   const text = await harness.runner.runAgentForChat(1, 'Hola');
 
-  assert.equal(text, 'respuesta nueva');
-  assert.equal(harness.getExecWithPtyCalls(), 1);
+  assert.equal(text, 'respuesta sdk');
   assert.equal(harness.getExecCalls(), 0);
-  assert.equal(harness.threads.get('chat:root:codex'), 'thread-cli');
+  assert.equal(harness.sdkRequests.length, 1);
+  assert.equal(harness.sdkRequests[0].threadId, '');
+  assert.equal(harness.threads.get('chat:root:codex'), 'thread-sdk');
   assert.equal(harness.setProjectCalls.length, 1);
-  assert.equal(harness.getLastExecWithPtyOptions().timeout, 1000);
   assert.equal(harness.getBootstrapCalls(), 0);
   assert.equal(harness.getRetrievalCalls(), 0);
   assert.deepEqual(harness.getLastBuildSharedPromptArgs(), ['Hola', [], undefined, []]);
 });
 
-test('runAgentForChat keeps using exec resume when thread exists', async () => {
+test('runAgentForChat reuses existing codex session through sdk', async () => {
   const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aipal-agent-runner-project-'));
   const harness = createRunnerHarness({
     projectDir,
@@ -222,65 +215,74 @@ test('runAgentForChat keeps using exec resume when thread exists', async () => {
       cwd: projectDir,
       source: 'cli',
     }),
+    runSdkTurn: async (request) => ({
+      text: 'respuesta reanudada',
+      threadId: request.threadId,
+      conversationId: request.threadId,
+      events: [],
+    }),
   });
 
   const text = await harness.runner.runAgentForChat(1, 'Continua');
 
-  assert.equal(text, 'respuesta resume');
-  assert.equal(harness.getExecCalls(), 1);
-  assert.equal(harness.getExecWithPtyCalls(), 0);
-  assert.equal(harness.getBootstrapCalls(), 0);
-  assert.equal(harness.getRetrievalCalls(), 0);
+  assert.equal(text, 'respuesta reanudada');
+  assert.equal(harness.sdkRequests.length, 1);
+  assert.equal(harness.sdkRequests[0].threadId, 'thread-existing');
+  assert.equal(harness.getExecCalls(), 0);
 });
 
-test('runAgentForChat fails clearly when interactive creation does not resolve a visible session', async () => {
+test('runAgentForChat fails clearly when sdk does not resolve a visible session id', async () => {
   const harness = createRunnerHarness({
     findNewestSessionDiff: async () => [],
+    runSdkTurn: async () => ({
+      text: 'sin thread',
+      threadId: '',
+      conversationId: '',
+      events: [],
+    }),
   });
 
   await assert.rejects(
     () => harness.runner.runAgentForChat(1, 'Hola'),
-    /No pude crear una sesión visible de Codex/
+    /No pude crear una sesion visible de Codex/
   );
   assert.equal(harness.threads.size, 0);
 });
 
-test('runAgentForChat treats interactive timeout as success when a visible cli session is detected', async () => {
+test('runAgentForChat forwards sdk events to onEvent callback', async () => {
+  const seen = [];
   const harness = createRunnerHarness({
-    execLocalWithPty: async () => {
-      const err = new Error('Command timed out after 1000ms');
-      err.code = 'ETIMEDOUT';
-      err.stdout = '\u001b[32mTip: Use /help for commands\u001b[0m';
-      throw err;
+    runSdkTurn: async (request) => {
+      await request.onEvent({
+        type: 'status',
+        phase: 'running',
+        message: 'Codex: razonando...',
+      });
+      await request.onEvent({
+        type: 'tool_activity',
+        tool: 'git status',
+        state: 'started',
+        message: 'Codex: ejecutando comando: git status',
+      });
+      return {
+        text: 'respuesta sdk',
+        threadId: 'thread-sdk',
+        conversationId: 'thread-sdk',
+        events: [],
+      };
     },
   });
 
-  const text = await harness.runner.runAgentForChat(1, 'Hola');
-
-  assert.equal(
-    text,
-    `Sesión creada y conectada en ${path.basename(
-      harness.projectDir
-    )}.\nA partir del próximo mensaje continuaré esa sesión.`
-  );
-  assert.equal(harness.threads.get('chat:root:codex'), 'thread-cli');
-});
-
-test('runAgentForChat uses confirmation reply when interactive output is suspicious', async () => {
-  const harness = createRunnerHarness({
-    execLocalWithPty: async () => 'Tip: Use /help for commands',
-    parseInteractiveOutput: () => ({ text: 'Tip: Use /help for commands', sawText: true }),
+  await harness.runner.runAgentForChat(1, 'Hola', {
+    onEvent: async (event) => {
+      seen.push(event.message || event.type);
+    },
   });
 
-  const text = await harness.runner.runAgentForChat(1, 'Hola');
-
-  assert.equal(
-    text,
-    `Sesión creada y conectada en ${path.basename(
-      harness.projectDir
-    )}.\nA partir del próximo mensaje continuaré esa sesión.`
-  );
-  assert.equal(harness.threads.get('chat:root:codex'), 'thread-cli');
+  assert.deepEqual(seen, [
+    'Codex: razonando...',
+    'Codex: ejecutando comando: git status',
+  ]);
 });
 
 test('runAgentForChat uses minimal shared prompt for codex attachments and script context', async () => {
@@ -296,18 +298,11 @@ test('runAgentForChat uses minimal shared prompt for codex attachments and scrip
     scriptContext: 'salida comando',
   });
 
-  const promptPayload = JSON.parse(harness.getLastBuildSharedPromptArgs()[0] ? JSON.stringify({
-    prompt: harness.getLastBuildSharedPromptArgs()[0],
-    imagePaths: harness.getLastBuildSharedPromptArgs()[1],
-    scriptContext: harness.getLastBuildSharedPromptArgs()[2],
-    documentPaths: harness.getLastBuildSharedPromptArgs()[3],
-  }) : '{}');
+  const promptPayload = JSON.parse(harness.sdkRequests[0].prompt);
   assert.equal(promptPayload.prompt, 'Revisa esto');
   assert.deepEqual(promptPayload.imagePaths, ['/tmp/image.png']);
   assert.deepEqual(promptPayload.documentPaths, ['/tmp/doc.pdf']);
   assert.equal(promptPayload.scriptContext, 'salida comando');
-  assert.equal(harness.getBootstrapCalls(), 0);
-  assert.equal(harness.getRetrievalCalls(), 0);
 });
 
 test('runAgentForChat keeps enriched prompt path for non-codex agents', async () => {
@@ -321,11 +316,15 @@ test('runAgentForChat keeps enriched prompt path for non-codex agents', async ()
     buildSharedSessionPrompt: () => {
       throw new Error('should not use shared prompt');
     },
+    codexApprovalMode: 'never',
+    codexSandboxMode: 'workspace-write',
+    createCodexSdkClient: () => ({
+      runTurn: async () => {
+        throw new Error('should not use sdk');
+      },
+    }),
     documentDir: '/tmp',
     execLocal: async () => 'salida final',
-    execLocalWithPty: async () => {
-      throw new Error('should not use pty');
-    },
     fileInstructionsEvery: 3,
     findNewestSessionDiff: async () => [],
     getAgent: () => ({
@@ -357,77 +356,10 @@ test('runAgentForChat keeps enriched prompt path for non-codex agents', async ()
     setProjectForAgent: () => '',
     threadTurns: new Map(),
     defaultTimeZone: 'Europe/Madrid',
+    wrapCommandWithPty: (value) => value,
   });
 
   const text = await runner.runAgentForChat(1, 'Hola');
 
   assert.equal(text, 'salida final');
-});
-
-test('runAgentForChat caps interactive new-session timeout to 45 seconds', async () => {
-  const harness = createRunnerHarness({
-    execLocalWithPty: async () => 'respuesta nueva',
-  });
-
-  const longTimeoutHarness = createRunnerHarness({
-    projectDir: harness.projectDir,
-  });
-
-  const runner = createAgentRunner({
-    agentMaxBuffer: 1024 * 1024,
-    agentTimeoutMs: 600000,
-    buildBootstrapContext: async () => 'bootstrap',
-    buildMemoryRetrievalContext: async () => '',
-    buildPrompt: (prompt) => prompt,
-    buildSharedSessionPrompt: (prompt) => prompt,
-    documentDir: '/tmp',
-    execLocal: async () => '{"type":"thread.started","thread_id":"thread-id"}',
-    execLocalWithPty: async (...args) => {
-      longTimeoutHarness.execArgs = args[1];
-      return 'respuesta nueva';
-    },
-    fileInstructionsEvery: 3,
-    findNewestSessionDiff: async () => [
-      {
-        id: 'thread-cli',
-        cwd: harness.projectDir,
-        source: 'cli',
-        timestamp: '2026-02-27T10:00:00.000Z',
-      },
-    ],
-    getAgent: () => ({
-      id: 'codex',
-      label: 'codex',
-      mergeStderr: false,
-      buildCommand: () => 'codex exec resume thread-id',
-      buildInteractiveNewSessionCommand: () => 'codex interactive new',
-      parseOutput: () => ({ text: 'respuesta resume', threadId: 'thread-id', sawJson: true }),
-      parseInteractiveOutput: () => ({ text: 'respuesta nueva', sawText: true }),
-    }),
-    getAgentLabel: () => 'codex',
-    getGlobalAgent: () => 'codex',
-    getGlobalModels: () => ({ codex: 'gpt-5-codex' }),
-    getGlobalThinking: () => 'medium',
-    getDefaultAgentCwd: () => harness.projectDir,
-    getLocalCodexSessionMeta: async () => ({ cwd: harness.projectDir, source: 'cli' }),
-    getThreads: () => new Map(),
-    imageDir: '/tmp',
-    listLocalCodexSessions: async () => [],
-    listLocalCodexSessionsSince: async () => [],
-    listSqliteCodexThreads: async () => [],
-    memoryRetrievalLimit: 5,
-    persistProjectOverrides: async () => {},
-    persistThreads: async () => {},
-    prefixTextWithTimestamp: (text) => text,
-    resolveAgentProjectCwd: async () => harness.projectDir,
-    resolveEffectiveAgentId: () => 'codex',
-    resolveThreadId: () => ({ threadKey: 'chat:root:codex', threadId: '', migrated: false }),
-    shellQuote: (value) => `'${String(value)}'`,
-    setProjectForAgent: () => harness.projectDir,
-    threadTurns: new Map(),
-    defaultTimeZone: 'Europe/Madrid',
-  });
-
-  await runner.runAgentForChat(1, 'Hola');
-  assert.equal(longTimeoutHarness.execArgs.timeout, 45000);
 });

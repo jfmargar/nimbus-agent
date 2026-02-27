@@ -13,6 +13,7 @@ function createTelegramReplyService(options) {
     isPathInside,
     markdownToTelegramHtml,
   } = options;
+  const PROGRESS_UPDATE_INTERVAL_MS = 750;
 
   async function replyWithError(ctx, label, err) {
     const detail = formatError(err);
@@ -33,6 +34,94 @@ function createTelegramReplyService(options) {
     send();
     const timer = setInterval(send, 4000);
     return () => clearInterval(timer);
+  }
+
+  function renderProgressEvent(event) {
+    if (!event || typeof event !== 'object') return '';
+    if (typeof event.message === 'string' && event.message.trim()) {
+      return event.message.trim();
+    }
+    if (event.type === 'status' && event.phase) {
+      return `Codex: ${event.phase}`;
+    }
+    if (event.type === 'tool_activity' && event.tool) {
+      return `Codex: ${event.tool}`;
+    }
+    if (event.type === 'error') {
+      return 'Codex: error durante la ejecucion.';
+    }
+    return '';
+  }
+
+  async function beginProgress(ctx, initialText) {
+    const message = await ctx.reply(String(initialText || 'Procesando...').trim());
+    const chatId = ctx.chat?.id;
+    const messageId = message?.message_id;
+    let lastSentText = String(initialText || 'Procesando...').trim();
+    let pendingText = '';
+    let flushTimer = null;
+    let active = true;
+
+    async function flush(force = false) {
+      if (!active || !chatId || !messageId) return;
+      const nextText = String(pendingText || '').trim();
+      if (!nextText || nextText === lastSentText) return;
+      if (!force && flushTimer) return;
+      pendingText = '';
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      try {
+        await bot.telegram.editMessageText(chatId, messageId, undefined, nextText);
+        lastSentText = nextText;
+      } catch (err) {
+        const detail = String(err?.description || err?.message || '');
+        if (detail.includes('message is not modified')) {
+          lastSentText = nextText;
+          return;
+        }
+        console.warn('Progress update error', err);
+      }
+    }
+
+    function scheduleFlush() {
+      if (!active || flushTimer) return;
+      flushTimer = setTimeout(() => {
+        flush(true).catch((err) => {
+          console.warn('Progress flush error', err);
+        });
+      }, PROGRESS_UPDATE_INTERVAL_MS);
+    }
+
+    return {
+      async update(text) {
+        const nextText = String(text || '').trim();
+        if (!nextText || nextText === lastSentText) return;
+        pendingText = nextText;
+        scheduleFlush();
+      },
+      async finish() {
+        if (!active) return;
+        active = false;
+        if (flushTimer) {
+          clearTimeout(flushTimer);
+          flushTimer = null;
+        }
+        try {
+          await bot.telegram.deleteMessage(chatId, messageId);
+        } catch (err) {
+          console.warn('Progress delete error', err);
+        }
+      },
+      async fail(text) {
+        if (!active) return;
+        const nextText = String(text || '').trim();
+        if (!nextText) return;
+        pendingText = nextText;
+        await flush(true);
+      },
+    };
   }
 
   async function replyWithResponse(ctx, response) {
@@ -152,8 +241,10 @@ function createTelegramReplyService(options) {
   }
 
   return {
+    beginProgress,
     replyWithError,
     replyWithResponse,
+    renderProgressEvent,
     replyWithTranscript,
     sendResponseToChat,
     startTyping,

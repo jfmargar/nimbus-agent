@@ -15,6 +15,9 @@ final class PreflightService {
         var errors: [String] = []
         var warnings: [String] = []
         var details: [String] = []
+        let effectiveEnv = EnvAssembler.build(settings: settings, token: token)
+        let effectiveCodexHome = effectiveEnv["CODEX_HOME"] ?? EnvAssembler.effectiveCodexHome()
+        let defaultCodexHome = "\(NSHomeDirectory())/.codex"
 
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedToken.isEmpty {
@@ -51,8 +54,20 @@ final class PreflightService {
 
         if let codexPath = ShellResolver.resolveCommandPath("codex") {
             details.append("codex: \(codexPath)")
+            if let version = Self.readCommandOutput(executablePath: codexPath, arguments: ["--version"]) {
+                details.append("codex version: \(version)")
+            }
         } else {
             errors.append("No se encontró `codex` en PATH. Si lo tienes instalado, reinicia Nimbus o verifica tu PATH en zsh.")
+        }
+
+        details.append("Codex integration: SDK")
+        details.append("CODEX_HOME: \(effectiveCodexHome)")
+        details.append("Codex approval: \(settings.codexApprovalMode)")
+        details.append("Codex sandbox: \(settings.codexSandboxMode)")
+        details.append("Codex progress updates: \(settings.codexProgressUpdates ? "enabled" : "disabled")")
+        if effectiveCodexHome != defaultCodexHome {
+            warnings.append("CODEX_HOME efectivo no apunta a \(defaultCodexHome). Nimbus compartirá sesiones con esa ruta alternativa.")
         }
 
         let whisperCommand = settings.whisperCmd.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -69,5 +84,31 @@ final class PreflightService {
         }
 
         return PreflightReport(errors: errors, warnings: warnings, details: details)
+    }
+
+    private static func readCommandOutput(executablePath: String, arguments: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+        process.environment = ["PATH": ShellResolver.mergedPathValue()]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        guard process.terminationStatus == 0 else {
+            return nil
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return output.isEmpty ? nil : output
     }
 }
