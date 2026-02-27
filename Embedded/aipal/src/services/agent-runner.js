@@ -32,6 +32,7 @@ function createAgentRunner(options) {
     createCodexSdkClient = defaultCreateCodexSdkClient,
     documentDir,
     execLocal,
+    execLocalWithPty,
     fileInstructionsEvery,
     findNewestSessionDiff,
     getAgent,
@@ -59,6 +60,7 @@ function createAgentRunner(options) {
     listLocalCodexSessions,
     wrapCommandWithPty,
   } = options;
+  const interactiveNewSessionTimeoutMs = Math.min(agentTimeoutMs, 45000);
   const codexSdkClient = createCodexSdkClient({
     agentTimeoutMs,
     approvalMode: codexApprovalMode,
@@ -282,6 +284,194 @@ function createAgentRunner(options) {
       fragments.push(`tool=${String(event.tool).replace(/\s+/g, '_')}`);
     }
     console.info(fragments.join(' '));
+  }
+
+  function isUsefulInteractiveReply(text) {
+    const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!normalized) return false;
+    if (normalized.length < 8) return false;
+    if (/^Tip:/i.test(normalized)) return false;
+    if (/^Usage:/i.test(normalized)) return false;
+    if (/^For more information/i.test(normalized)) return false;
+    if (/Continue anyway\?/i.test(normalized)) return false;
+    if (/interactive TUI/i.test(normalized)) return false;
+    if (/^[?[\]0-9;<>uhtlrmc\\]+$/.test(normalized)) return false;
+    return true;
+  }
+
+  function buildInteractiveCreationReply({ executionCwd, parsedText, execError, candidateId }) {
+    const normalizedText = String(parsedText || '').trim();
+    if (!candidateId) return '';
+    if (execError?.code === 'ETIMEDOUT') {
+      return `Sesion creada y conectada en ${path.basename(
+        executionCwd
+      )}.\nA partir del proximo mensaje continuare esa sesion.`;
+    }
+    if (isUsefulInteractiveReply(normalizedText)) {
+      return normalizedText;
+    }
+    return `Sesion creada y conectada en ${path.basename(
+      executionCwd
+    )}.\nA partir del proximo mensaje continuare esa sesion.`;
+  }
+
+  async function runCodexNewSessionInteractive({
+    agent,
+    chatId,
+    topicId,
+    effectiveAgentId,
+    executionCwd,
+    finalPrompt,
+    model,
+    thinking,
+    threadKey,
+    threads,
+  }) {
+    if (typeof agent.buildInteractiveNewSessionCommand !== 'function') {
+      throw new Error(
+        'No pude crear una sesion visible de Codex para este proyecto. Puedes reintentar o usar Continuar ultima sesion.'
+      );
+    }
+
+    const snapshot = await buildSessionCreationSnapshot(executionCwd);
+    console.info(
+      `Agent start chat=${chatId} topic=${topicId || 'root'} agent=${agent.id} cwd=${
+        executionCwd || '(default)'
+      } thread=new mode=new-interactive-cli startedAt=${snapshot.startedAt} sessionSnapshotCount=${
+        snapshot.sessionSnapshotCount
+      }`
+    );
+
+    const promptBase64 = Buffer.from(finalPrompt, 'utf8').toString('base64');
+    const promptExpression = '"$PROMPT"';
+    const interactiveCmd = agent.buildInteractiveNewSessionCommand({
+      prompt: finalPrompt,
+      promptExpression,
+      cwd: executionCwd,
+      thinking,
+      model,
+    });
+    const command = [
+      `PROMPT_B64=${shellQuote(promptBase64)};`,
+      'PROMPT=$(printf %s "$PROMPT_B64" | base64 --decode);',
+      'export TERM=xterm-256color;',
+      `${interactiveCmd}`,
+    ].join(' ');
+
+    const startedAt = Date.now();
+    const abortController = new AbortController();
+    let output = '';
+    let execError;
+    let resolved;
+    try {
+      const execPromise = execLocalWithPty(command, {
+        ...buildExecOptions({}, executionCwd),
+        timeout: interactiveNewSessionTimeoutMs,
+        maxBuffer: agentMaxBuffer,
+        signal: abortController.signal,
+      });
+      const execStatusPromise = execPromise
+        .then(() => ({ type: 'exec' }))
+        .catch((error) => ({ type: 'exec', error }));
+      const resolvePromise = resolveNewCliSessionId(snapshot, executionCwd);
+      const firstResult = await Promise.race([
+        execStatusPromise,
+        resolvePromise.then((value) => ({ type: 'resolve', value })),
+      ]);
+
+      if (firstResult.type === 'resolve') {
+        resolved = firstResult.value;
+        if (resolved?.session) {
+          abortController.abort();
+        }
+      }
+
+      try {
+        output = await execPromise;
+      } catch (err) {
+        execError = err;
+        if (err && typeof err.stdout === 'string') {
+          output = err.stdout;
+        }
+      }
+
+      if (!resolved) {
+        resolved = await resolvePromise;
+      }
+    } catch (err) {
+      execError = err;
+      if (err && typeof err.stdout === 'string') {
+        output = err.stdout;
+      }
+    } finally {
+      const elapsedMs = Date.now() - startedAt;
+      console.info(
+        `Agent finished chat=${chatId} topic=${topicId || 'root'} durationMs=${elapsedMs} mode=new-interactive-cli`
+      );
+    }
+
+    const parsed = typeof agent.parseInteractiveOutput === 'function'
+      ? agent.parseInteractiveOutput(output)
+      : { text: String(output || '').trim(), sawText: Boolean(String(output || '').trim()) };
+    if (execError || !String(parsed?.text || '').trim()) {
+      const preview = String(output || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 400);
+      if (preview) {
+        console.warn(
+          `Agent interactive new-session output preview chat=${chatId} topic=${
+            topicId || 'root'
+          } preview=${preview}`
+        );
+      }
+    }
+    const candidateId = String(resolved?.session?.id || '').trim();
+    const detectionSource = String(resolved?.detectionSource || 'none');
+    const sourceType = String(resolved?.session?.source || '').trim().toLowerCase() || 'unknown';
+    console.info(
+      `Agent new-session resolve chat=${chatId} topic=${topicId || 'root'} candidateIds=${
+        candidateId || '(none)'
+      } detectionSource=${detectionSource} sourceTypeIfKnown=${sourceType}`
+    );
+
+    if (!candidateId) {
+      if (detectionSource.includes('ambiguous')) {
+        throw new Error(
+          'No pude asociar de forma segura la nueva sesion visible de Codex. Puedes reintentar o usar Continuar ultima sesion.'
+        );
+      }
+      throw new Error(
+        'No pude crear una sesion visible de Codex para este proyecto. Puedes reintentar o usar Continuar ultima sesion.'
+      );
+    }
+
+    await syncThreadAndProject({
+      chatId,
+      topicId,
+      effectiveAgentId,
+      threadKey,
+      threadId: candidateId,
+      executionCwd,
+      threads,
+    });
+
+    const abortedAfterSessionDetection =
+      execError?.name === 'AbortError' ||
+      execError?.code === 'ABORT_ERR';
+    if (execError && !abortedAfterSessionDetection) {
+      console.warn(
+        `Agent interactive new-session exited non-zero chat=${chatId} topic=${topicId || 'root'} code=${
+          execError.code || 'unknown'
+        } timeoutMs=${interactiveNewSessionTimeoutMs}`
+      );
+    }
+    return buildInteractiveCreationReply({
+      executionCwd,
+      parsedText: parsed?.text,
+      execError,
+      candidateId,
+    });
   }
 
   async function runCodexTurn({
@@ -584,6 +774,21 @@ function createAgentRunner(options) {
       );
     }
     const model = getGlobalModels()[effectiveAgentId];
+
+    if (agent.id === 'codex' && !threadId) {
+      return runCodexNewSessionInteractive({
+        agent,
+        chatId,
+        topicId,
+        effectiveAgentId,
+        executionCwd,
+        finalPrompt,
+        model,
+        thinking,
+        threadKey,
+        threads,
+      });
+    }
 
     if (agent.id === 'codex') {
       const result = await runCodexTurn({

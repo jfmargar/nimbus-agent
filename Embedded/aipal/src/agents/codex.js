@@ -2,8 +2,10 @@ const { shellQuote, resolvePromptValue } = require('./utils');
 
 const CODEX_CMD = 'codex';
 const BASE_ARGS = '--json --skip-git-repo-check --yolo';
+const INTERACTIVE_BASE_ARGS = '--no-alt-screen -a never -s workspace-write';
 const MODEL_ARG = '--model';
 const REASONING_CONFIG_KEY = 'model_reasoning_effort';
+const ANSI_PATTERN = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
 
 function appendOptionalArg(args, flag, value) {
   if (!flag || !value) return args;
@@ -25,6 +27,21 @@ function buildCommand({ prompt, promptExpression, threadId, model, thinking }) {
     return `${CODEX_CMD} exec resume ${shellQuote(threadId)} ${args} ${promptValue}`.trim();
   }
   return `${CODEX_CMD} exec ${args} ${promptValue}`.trim();
+}
+
+function buildInteractiveNewSessionCommand({
+  prompt,
+  promptExpression,
+  model,
+  thinking,
+  cwd,
+}) {
+  const promptValue = resolvePromptValue(prompt, promptExpression);
+  let args = INTERACTIVE_BASE_ARGS;
+  args = appendOptionalArg(args, '-C', cwd);
+  args = appendOptionalArg(args, MODEL_ARG, model);
+  args = appendOptionalReasoning(args, thinking);
+  return `${CODEX_CMD} ${args} ${promptValue}`.trim();
 }
 
 function parseOutput(output) {
@@ -78,6 +95,36 @@ function parseOutput(output) {
   return { text, threadId, sawJson };
 }
 
+function stripAnsi(value) {
+  return String(value || '').replace(ANSI_PATTERN, '');
+}
+
+function parseInteractiveOutput(output) {
+  const cleaned = stripAnsi(output)
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !line.startsWith('WARNING: proceeding'))
+    .filter((line) => !line.includes('interactive TUI may not work'))
+    .filter((line) => !line.startsWith('Continue anyway?'))
+    .filter((line) => !/^Error: Operation not permitted/.test(line))
+    .filter((line) => !/^Tip:/i.test(line))
+    .filter((line) => !/^Usage:/i.test(line))
+    .filter((line) => !/^For more information/i.test(line))
+    .filter((line) => !/^https?:\/\//i.test(line))
+    .filter((line) => !/^[?[\]0-9;<>uhtlrmc\\]+$/.test(line))
+    .filter((line) => !/^TUI/i.test(line))
+    .filter((line) => line.length >= 8);
+
+  if (cleaned.length === 0) return { text: '', sawText: false };
+  const lastMeaningful = cleaned[cleaned.length - 1];
+  return {
+    text: lastMeaningful,
+    sawText: Boolean(lastMeaningful),
+  };
+}
+
 module.exports = {
   id: 'codex',
   label: 'codex',
@@ -85,5 +132,7 @@ module.exports = {
   mergeStderr: false,
   transport: 'sdk',
   buildCommand,
+  buildInteractiveNewSessionCommand,
   parseOutput,
+  parseInteractiveOutput,
 };

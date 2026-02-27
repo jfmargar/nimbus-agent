@@ -48,6 +48,8 @@ function createRunnerHarness(overrides = {}) {
   const setProjectCalls = [];
   const sdkRequests = [];
   let execCalls = 0;
+  let execWithPtyCalls = 0;
+  let lastExecWithPtyOptions = null;
   let bootstrapCalls = 0;
   let retrievalCalls = 0;
   let lastBuildSharedPromptArgs = null;
@@ -58,7 +60,14 @@ function createRunnerHarness(overrides = {}) {
     mergeStderr: false,
     transport: 'sdk',
     buildCommand: () => 'codex exec resume thread-id',
+    buildInteractiveNewSessionCommand: () => 'codex interactive new',
     parseOutput: () => ({ text: 'respuesta resume', threadId: 'thread-id', sawJson: true }),
+    parseInteractiveOutput: (output) => {
+      if (typeof overrides.parseInteractiveOutput === 'function') {
+        return overrides.parseInteractiveOutput(output);
+      }
+      return { text: 'respuesta nueva', sawText: true };
+    },
   };
 
   const runner = createAgentRunner({
@@ -110,6 +119,14 @@ function createRunnerHarness(overrides = {}) {
         return overrides.execLocal();
       }
       return '{"type":"thread.started","thread_id":"thread-id"}';
+    },
+    execLocalWithPty: async (...args) => {
+      execWithPtyCalls += 1;
+      lastExecWithPtyOptions = args[1] || null;
+      if (typeof overrides.execLocalWithPty === 'function') {
+        return overrides.execLocalWithPty(...args);
+      }
+      return 'respuesta nueva';
     },
     fileInstructionsEvery: 3,
     findNewestSessionDiff: async () => {
@@ -180,22 +197,25 @@ function createRunnerHarness(overrides = {}) {
     threads,
     getBootstrapCalls: () => bootstrapCalls,
     getExecCalls: () => execCalls,
+    getExecWithPtyCalls: () => execWithPtyCalls,
     getLastBuildSharedPromptArgs: () => lastBuildSharedPromptArgs,
+    getLastExecWithPtyOptions: () => lastExecWithPtyOptions,
     getRetrievalCalls: () => retrievalCalls,
   };
 }
 
-test('runAgentForChat creates visible codex sessions with sdk when no thread exists', async () => {
+test('runAgentForChat creates visible codex sessions with interactive CLI when no thread exists', async () => {
   const harness = createRunnerHarness();
 
   const text = await harness.runner.runAgentForChat(1, 'Hola');
 
-  assert.equal(text, 'respuesta sdk');
+  assert.equal(text, 'respuesta nueva');
   assert.equal(harness.getExecCalls(), 0);
-  assert.equal(harness.sdkRequests.length, 1);
-  assert.equal(harness.sdkRequests[0].threadId, '');
-  assert.equal(harness.threads.get('chat:root:codex'), 'thread-sdk');
+  assert.equal(harness.getExecWithPtyCalls(), 1);
+  assert.equal(harness.sdkRequests.length, 0);
+  assert.equal(harness.threads.get('chat:root:codex'), 'thread-cli');
   assert.equal(harness.setProjectCalls.length, 1);
+  assert.equal(harness.getLastExecWithPtyOptions().timeout, 1000);
   assert.equal(harness.getBootstrapCalls(), 0);
   assert.equal(harness.getRetrievalCalls(), 0);
   assert.deepEqual(harness.getLastBuildSharedPromptArgs(), ['Hola', [], undefined, []]);
@@ -229,17 +249,12 @@ test('runAgentForChat reuses existing codex session through sdk', async () => {
   assert.equal(harness.sdkRequests.length, 1);
   assert.equal(harness.sdkRequests[0].threadId, 'thread-existing');
   assert.equal(harness.getExecCalls(), 0);
+  assert.equal(harness.getExecWithPtyCalls(), 0);
 });
 
-test('runAgentForChat fails clearly when sdk does not resolve a visible session id', async () => {
+test('runAgentForChat fails clearly when interactive creation does not resolve a visible session id', async () => {
   const harness = createRunnerHarness({
     findNewestSessionDiff: async () => [],
-    runSdkTurn: async () => ({
-      text: 'sin thread',
-      threadId: '',
-      conversationId: '',
-      events: [],
-    }),
   });
 
   await assert.rejects(
@@ -249,9 +264,80 @@ test('runAgentForChat fails clearly when sdk does not resolve a visible session 
   assert.equal(harness.threads.size, 0);
 });
 
+test('runAgentForChat treats interactive timeout as success when a visible cli session is detected', async () => {
+  const harness = createRunnerHarness({
+    execLocalWithPty: async () => {
+      const err = new Error('Command timed out after 1000ms');
+      err.code = 'ETIMEDOUT';
+      err.stdout = '\u001b[32mTip: Use /help for commands\u001b[0m';
+      throw err;
+    },
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Hola');
+
+  assert.equal(
+    text,
+    `Sesion creada y conectada en ${path.basename(
+      harness.projectDir
+    )}.\nA partir del proximo mensaje continuare esa sesion.`
+  );
+  assert.equal(harness.threads.get('chat:root:codex'), 'thread-cli');
+});
+
+test('runAgentForChat uses confirmation reply when interactive output is suspicious', async () => {
+  const harness = createRunnerHarness({
+    execLocalWithPty: async () => 'Tip: Use /help for commands',
+    parseInteractiveOutput: () => ({ text: 'Tip: Use /help for commands', sawText: true }),
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Hola');
+
+  assert.equal(
+    text,
+    `Sesion creada y conectada en ${path.basename(
+      harness.projectDir
+    )}.\nA partir del proximo mensaje continuare esa sesion.`
+  );
+  assert.equal(harness.threads.get('chat:root:codex'), 'thread-cli');
+});
+
+test('runAgentForChat aborts interactive CLI once visible session is detected', async () => {
+  let aborted = false;
+  const harness = createRunnerHarness({
+    execLocalWithPty: async (_command, options = {}) =>
+      new Promise((_resolve, reject) => {
+        options.signal?.addEventListener('abort', () => {
+          aborted = true;
+          const err = new Error('The operation was aborted');
+          err.name = 'AbortError';
+          err.code = 'ABORT_ERR';
+          reject(err);
+        });
+      }),
+    parseInteractiveOutput: () => ({ text: '', sawText: false }),
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Hola');
+
+  assert.equal(aborted, true);
+  assert.equal(
+    text,
+    `Sesion creada y conectada en ${path.basename(
+      harness.projectDir
+    )}.\nA partir del proximo mensaje continuare esa sesion.`
+  );
+  assert.equal(harness.threads.get('chat:root:codex'), 'thread-cli');
+});
+
 test('runAgentForChat forwards sdk events to onEvent callback', async () => {
   const seen = [];
   const harness = createRunnerHarness({
+    resolveThreadId: () => ({
+      threadKey: 'chat:root:codex',
+      threadId: 'thread-existing',
+      migrated: false,
+    }),
     runSdkTurn: async (request) => {
       await request.onEvent({
         type: 'status',
@@ -298,11 +384,12 @@ test('runAgentForChat uses minimal shared prompt for codex attachments and scrip
     scriptContext: 'salida comando',
   });
 
-  const promptPayload = JSON.parse(harness.sdkRequests[0].prompt);
-  assert.equal(promptPayload.prompt, 'Revisa esto');
-  assert.deepEqual(promptPayload.imagePaths, ['/tmp/image.png']);
-  assert.deepEqual(promptPayload.documentPaths, ['/tmp/doc.pdf']);
-  assert.equal(promptPayload.scriptContext, 'salida comando');
+  assert.deepEqual(harness.getLastBuildSharedPromptArgs(), [
+    'Revisa esto',
+    ['/tmp/image.png'],
+    'salida comando',
+    ['/tmp/doc.pdf'],
+  ]);
 });
 
 test('runAgentForChat keeps enriched prompt path for non-codex agents', async () => {
