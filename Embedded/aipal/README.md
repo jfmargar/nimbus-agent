@@ -109,6 +109,11 @@ This allows two-way continuity:
 - start in Codex app, continue in Telegram
 - start in Telegram, continue in Codex app
 
+Known Codex app limitation:
+
+- If Codex app is already open, it may not refresh immediately to show messages or conversations advanced from Telegram.
+- This does not block the shared-session workflow: you can continue working from Telegram and later open or restart Codex app to keep going from the same session state.
+
 ### Clean shared prompt mode for Codex
 
 Codex uses a shared-session prompt mode so the conversation remains readable in Codex app.

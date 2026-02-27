@@ -44,6 +44,11 @@ Reglas actuales:
 - Cuando el bot crea una sesión nueva para Codex, intenta crear una sesión visible para Codex app.
 - Cuando el bot continúa una sesión ya existente, reutiliza el `thread_id` de esa sesión.
 
+Limitación conocida de Codex app:
+
+- Si Codex app ya está abierta, puede no refrescar inmediatamente los mensajes o conversaciones que avanzan desde Telegram.
+- Esa falta de refresco no bloquea el flujo real de trabajo: puedes seguir usando Telegram normalmente y, al abrir o reiniciar Codex app más tarde, continuar desde la sesión compartida en el punto en que quedó.
+
 ### Flujo de Telegram para Codex
 
 1. Abrir `/menu`.
