@@ -23,6 +23,13 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function normalizeDateInput(value) {
+  if (!value) return 0;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function createAgentRunner(options) {
   const {
     agentMaxBuffer,
@@ -75,10 +82,19 @@ function createAgentRunner(options) {
     sandboxMode: codexSandboxMode,
   });
 
-  async function resolveLatestCodexSessionId(cwd) {
+  async function resolveLatestCodexSessionId(cwd, sessionFilter = {}) {
     if (typeof listLocalCodexSessions !== 'function') return '';
     const normalizedCwd = String(cwd || '').trim();
     if (!normalizedCwd) return '';
+    const includeIds = Array.isArray(sessionFilter.includeIds)
+      ? new Set(sessionFilter.includeIds.map((value) => String(value || '').trim()).filter(Boolean))
+      : null;
+    const excludeIds = new Set(
+      Array.isArray(sessionFilter.excludeIds)
+        ? sessionFilter.excludeIds.map((value) => String(value || '').trim()).filter(Boolean)
+        : []
+    );
+    const sinceTs = normalizeDateInput(sessionFilter.sinceTs);
 
     // Codex may flush session metadata a little after command exit.
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -88,7 +104,20 @@ function createAgentRunner(options) {
           cwd: normalizedCwd,
         });
         const latest = Array.isArray(sessions)
-          ? sessions.find((session) => String(session?.id || '').trim())
+          ? sessions
+              .filter((session) => {
+                const sessionId = String(session?.id || '').trim();
+                if (!sessionId) return false;
+                if (includeIds && !includeIds.has(sessionId)) return false;
+                if (excludeIds.has(sessionId)) return false;
+                if (sinceTs > 0 && normalizeDateInput(session?.timestamp) < sinceTs) {
+                  return false;
+                }
+                return true;
+              })
+              .sort(
+                (a, b) => normalizeDateInput(b?.timestamp) - normalizeDateInput(a?.timestamp)
+              )[0]
           : null;
         const id = String(latest?.id || '').trim();
         if (id) return id;
@@ -163,6 +192,7 @@ function createAgentRunner(options) {
   async function buildSessionCreationSnapshot(cwd) {
     if (!cwd || typeof listLocalCodexSessions !== 'function') {
       return {
+        previousLatestId: '',
         previousIds: [],
         startedAt: Date.now(),
         sessionSnapshotCount: 0,
@@ -173,6 +203,7 @@ function createAgentRunner(options) {
       cwd,
     });
     return {
+      previousLatestId: String(sessions[0]?.id || '').trim(),
       previousIds: sessions.map((session) => String(session?.id || '').trim()).filter(Boolean),
       startedAt: Date.now(),
       sessionSnapshotCount: sessions.length,
@@ -323,6 +354,12 @@ function createAgentRunner(options) {
     )}.\nA partir del proximo mensaje continuare esa sesion.`;
   }
 
+  function buildExistingSessionReuseReply({ executionCwd }) {
+    return `No pude confirmar la creacion de una sesion nueva en ${path.basename(
+      executionCwd
+    )}.\nHe vuelto a conectar la sesion anterior del proyecto y seguire trabajando ahi.`;
+  }
+
   function finalizeInteractiveExecution({
     execPromise,
     abortController,
@@ -458,10 +495,14 @@ function createAgentRunner(options) {
 
     resolved = await resolveNewCliSessionId(snapshot, executionCwd);
     let candidateId = String(resolved?.session?.id || '').trim();
+    let reusedExistingSession = false;
     const detectionSource = String(resolved?.detectionSource || 'none');
     const sourceType = String(resolved?.session?.source || '').trim().toLowerCase() || 'unknown';
     if (!candidateId) {
-      const earlyLatest = await resolveLatestCodexSessionId(executionCwd);
+      const earlyLatest = await resolveLatestCodexSessionId(executionCwd, {
+        excludeIds: snapshot.previousIds,
+        sinceTs: snapshot.startedAt,
+      });
       if (earlyLatest) {
         candidateId = earlyLatest;
       }
@@ -474,7 +515,10 @@ function createAgentRunner(options) {
 
     if (!candidateId) {
       const cleanupResult = await finalizeCleanup();
-      const fallbackLatest = await resolveLatestCodexSessionId(executionCwd);
+      const fallbackLatest = await resolveLatestCodexSessionId(executionCwd, {
+        excludeIds: snapshot.previousIds,
+        sinceTs: snapshot.startedAt,
+      });
       if (fallbackLatest) {
         await syncThreadAndProject({
           chatId,
@@ -493,6 +537,31 @@ function createAgentRunner(options) {
             candidateId: fallbackLatest,
           }),
           threadId: fallbackLatest,
+          reusedExistingSession: false,
+        };
+      }
+      const previousSessionId =
+        snapshot.previousLatestId ||
+        (await resolveLatestCodexSessionId(executionCwd, {
+          includeIds: snapshot.previousIds,
+        }));
+      if (previousSessionId) {
+        reusedExistingSession = true;
+        await syncThreadAndProject({
+          chatId,
+          topicId,
+          effectiveAgentId,
+          threadKey,
+          threadId: previousSessionId,
+          executionCwd,
+          threads,
+        });
+        return {
+          text: buildExistingSessionReuseReply({
+            executionCwd,
+          }),
+          threadId: previousSessionId,
+          reusedExistingSession,
         };
       }
       if (detectionSource.includes('ambiguous')) {
@@ -524,6 +593,7 @@ function createAgentRunner(options) {
           candidateId,
         }),
         threadId: candidateId,
+        reusedExistingSession,
         cleanupPromise: finalizeCleanup()
           .then((result) => ({
             finished: true,
@@ -557,6 +627,7 @@ function createAgentRunner(options) {
         candidateId,
       }),
       threadId: candidateId,
+      reusedExistingSession,
     };
   }
 

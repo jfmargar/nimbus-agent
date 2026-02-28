@@ -166,7 +166,12 @@ function createRunnerHarness(overrides = {}) {
       }
       return [];
     },
-    listLocalCodexSessionsSince: async () => [],
+    listLocalCodexSessionsSince: async (...args) => {
+      if (typeof overrides.listLocalCodexSessionsSince === 'function') {
+        return overrides.listLocalCodexSessionsSince(...args);
+      }
+      return [];
+    },
     listSqliteCodexThreads: async () => [],
     memoryRetrievalLimit: 5,
     persistProjectOverrides: async () => {},
@@ -346,25 +351,20 @@ test('runAgentTurnForChat can attach a visible session before interactive cleanu
   await result.cleanupPromise;
 });
 
-test('runAgentTurnForChat falls back early to latest local codex session when diff misses it', async () => {
+test('runAgentTurnForChat still detects a newly created local codex session when diff misses it', async () => {
   const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aipal-agent-runner-project-'));
-  let listCalls = 0;
   const harness = createRunnerHarness({
     projectDir,
     findNewestSessionDiff: async () => [],
-    listLocalCodexSessions: async () => {
-      listCalls += 1;
-      return listCalls === 1
-        ? []
-        : [
-            {
-              id: 'thread-fallback',
-              cwd: projectDir,
-              source: 'cli',
-              timestamp: '2026-02-27T10:00:00.000Z',
-            },
-          ];
-    },
+    listLocalCodexSessions: async () => [],
+    listLocalCodexSessionsSince: async () => [
+      {
+        id: 'thread-fallback',
+        cwd: projectDir,
+        source: 'cli',
+        timestamp: '2026-02-27T10:00:00.000Z',
+      },
+    ],
     execLocalWithPty: async (_command, options) =>
       new Promise((_, reject) => {
         options.signal.addEventListener(
@@ -388,6 +388,51 @@ test('runAgentTurnForChat falls back early to latest local codex session when di
   assert.equal(result.threadId, 'thread-fallback');
   assert.equal(harness.threads.get('chat:root:codex'), 'thread-fallback');
   await result.cleanupPromise;
+});
+
+test('runAgentTurnForChat warns when it must reattach a previous codex session', async () => {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aipal-agent-runner-project-'));
+  const harness = createRunnerHarness({
+    projectDir,
+    findNewestSessionDiff: async () => [],
+    listLocalCodexSessions: async () => [
+      {
+        id: 'thread-existing',
+        cwd: projectDir,
+        source: 'cli',
+        timestamp: '2026-02-26T10:00:00.000Z',
+      },
+    ],
+    listLocalCodexSessionsSince: async () => [],
+    execLocalWithPty: async (_command, options) =>
+      new Promise((_, reject) => {
+        options.signal.addEventListener(
+          'abort',
+          () => {
+            const err = new Error('aborted');
+            err.name = 'AbortError';
+            reject(err);
+          },
+          { once: true }
+        );
+      }),
+    parseInteractiveOutput: () => ({ text: '', sawText: false }),
+  });
+
+  const result = await harness.runner.runAgentTurnForChat(1, 'Nombrar sesion', {
+    waitForInteractiveCompletion: true,
+    backgroundInteractiveCleanup: true,
+  });
+
+  assert.equal(
+    result.text,
+    `No pude confirmar la creacion de una sesion nueva en ${path.basename(
+      harness.projectDir
+    )}.\nHe vuelto a conectar la sesion anterior del proyecto y seguire trabajando ahi.`
+  );
+  assert.equal(result.threadId, 'thread-existing');
+  assert.equal(result.reusedExistingSession, true);
+  assert.equal(harness.threads.get('chat:root:codex'), 'thread-existing');
 });
 
 test('runAgentForChat aborts interactive creation after grace period when completion hangs', async () => {

@@ -1630,6 +1630,8 @@ function registerSettingsCommands(options) {
             backgroundInteractiveCleanup: true,
           }
         );
+        const sessionCreationNotice = String(sessionCreation?.text || '').trim();
+        const reusedExistingSession = sessionCreation?.reusedExistingSession === true;
         if (initialRequest) {
           const cleanupFinishedQuickly = sessionCreation?.cleanupPromise
             ? await Promise.race([
@@ -1651,6 +1653,11 @@ function registerSettingsCommands(options) {
               }
             );
             return;
+          }
+          if (reusedExistingSession && sessionCreationNotice) {
+            await ctx.reply(sessionCreationNotice, {
+              reply_markup: buildMainMenuKeyboard(),
+            });
           }
           await captureMemoryEvent({
             threadKey: memoryThreadKey,
@@ -1687,6 +1694,12 @@ function registerSettingsCommands(options) {
         feedback.stopTyping();
         if (feedback.progress) {
           await feedback.progress.finish();
+        }
+        if (reusedExistingSession && sessionCreationNotice) {
+          await ctx.reply(sessionCreationNotice, {
+            reply_markup: buildMainMenuKeyboard(),
+          });
+          return;
         }
         await ctx.reply(
           `Sesión "${sessionName}" creada en ${projectNameFromCwd(
