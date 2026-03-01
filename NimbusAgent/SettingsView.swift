@@ -21,6 +21,11 @@ struct SettingsView: View {
 
     private var generalTab: some View {
         VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                tokenStatusCard(for: .codex)
+                tokenStatusCard(for: .gemini)
+            }
+
             Form {
                 Section("Bots") {
                     SecureField("Telegram Bot Token (Codex)", text: $model.codexToken)
@@ -138,5 +143,25 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func tokenStatusCard(for bot: NimbusBot) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: model.statusIconName(for: bot))
+                    .foregroundStyle(model.statusColor(for: bot))
+                Text(bot.label)
+                    .font(.headline)
+            }
+            Text(model.hasToken(bot) ? "Token configurado" : "Token pendiente")
+                .font(.subheadline)
+            Text(model.preflightSummary(for: bot))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }

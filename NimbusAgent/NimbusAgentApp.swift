@@ -5,7 +5,7 @@ struct NimbusMenuView: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("Nimbus")
                 .font(.headline)
 
@@ -13,31 +13,45 @@ struct NimbusMenuView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Divider()
-
             ForEach(NimbusBot.allCases) { bot in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(bot.label)
-                        .font(.subheadline.weight(.semibold))
-                    Text(model.runState(for: bot).label)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    HStack {
-                        Button("Iniciar") {
-                            model.startBot(bot)
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .center, spacing: 8) {
+                            Image(systemName: model.statusIconName(for: bot))
+                                .foregroundStyle(model.statusColor(for: bot))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(bot.label)
+                                    .font(.subheadline.weight(.semibold))
+                                Text(model.runState(for: bot).label)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(model.hasToken(bot) ? "Token OK" : "Sin token")
+                                .font(.caption2.weight(.medium))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background((model.hasToken(bot) ? Color.green : Color.secondary).opacity(0.12))
+                                .foregroundStyle(model.hasToken(bot) ? .green : .secondary)
+                                .clipShape(Capsule())
                         }
-                        .disabled(!model.canStart(bot))
 
-                        Button("Detener") {
-                            model.stopBot(bot)
+                        Text(model.preflightSummary(for: bot))
+                            .font(.caption)
+                            .foregroundStyle(model.statusColor(for: bot))
+
+                        HStack {
+                            Button("Iniciar") {
+                                model.startBot(bot)
+                            }
+                            .disabled(!model.canStart(bot))
+
+                            Button("Detener") {
+                                model.stopBot(bot)
+                            }
+                            .disabled(!model.canStop(bot))
                         }
-                        .disabled(!model.canStop(bot))
                     }
-                }
-
-                if bot != NimbusBot.allCases.last {
-                    Divider()
                 }
             }
 
@@ -70,7 +84,7 @@ struct NimbusMenuView: View {
             }
         }
         .padding(12)
-        .frame(minWidth: 280)
+        .frame(minWidth: 300)
     }
 }
 

@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import SwiftUI
 
 struct BotStatus {
     var runState: AgentRunState = .idle
@@ -216,6 +217,53 @@ final class NimbusAppModel: ObservableObject {
         case .idle, .stopping, .failed:
             return false
         }
+    }
+
+    func hasToken(_ bot: NimbusBot) -> Bool {
+        !token(for: bot).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func latestLogLine(for bot: NimbusBot) -> String {
+        logs(for: bot).last ?? "Sin actividad reciente."
+    }
+
+    func statusColor(for bot: NimbusBot) -> Color {
+        switch runState(for: bot) {
+        case .idle:
+            return .secondary
+        case .starting, .stopping:
+            return .orange
+        case .running:
+            return .green
+        case .failed:
+            return .red
+        }
+    }
+
+    func statusIconName(for bot: NimbusBot) -> String {
+        switch runState(for: bot) {
+        case .idle:
+            return "pause.circle"
+        case .starting:
+            return "arrow.triangle.2.circlepath.circle"
+        case .running:
+            return "checkmark.circle.fill"
+        case .stopping:
+            return "stop.circle"
+        case .failed:
+            return "xmark.octagon.fill"
+        }
+    }
+
+    func preflightSummary(for bot: NimbusBot) -> String {
+        let report = preflight(for: bot)
+        if !report.errors.isEmpty {
+            return "\(report.errors.count) error(es)"
+        }
+        if !report.warnings.isEmpty {
+            return "\(report.warnings.count) warning(s)"
+        }
+        return "Preflight OK"
     }
 
     var canStartAnyBot: Bool {
