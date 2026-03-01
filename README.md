@@ -1,6 +1,6 @@
 # NimbusAgent
 
-NimbusAgent es una app de macOS en la barra de menús que empaqueta y ejecuta un bot de Telegram basado en **AIPAL** con runtime embebido (`Node` + código del agente). El repo ya incluye ese runtime bajo `Embedded/`, así que el flujo normal de trabajo no requiere un checkout separado de AIPAL.
+NimbusAgent es una app de macOS en la barra de menús que empaqueta y ejecuta bots de Telegram basados en **AIPAL** con runtime embebido (`Node` + código del agente). El repo ya incluye ese runtime bajo `Embedded/`, así que el flujo normal de trabajo no requiere un checkout separado de AIPAL.
 
 Su objetivo principal es operar sesiones de agentes desde Telegram, con integración real con **Codex** para compartir proyectos y conversaciones entre:
 
@@ -14,12 +14,16 @@ Descarga directa del paquete generado:
 ## Qué hace la app
 
 - Inicia y detiene el agente desde el menú de macOS.
+- Puede ejecutar dos bots simultáneos:
+  - un bot bloqueado a `codex`
+  - un bot bloqueado a `gemini`
 - Abre ventanas de **Configuración** y **Diagnóstico**.
 - Ejecuta **preflight** antes de arrancar para validar requisitos locales.
 - Muestra logs recientes y permite copiarlos para soporte.
 - Guarda secretos y ajustes de forma separada:
-  - `TELEGRAM_BOT_TOKEN` en Keychain.
+  - `TELEGRAM_BOT_TOKEN` de Codex y Gemini en Keychain.
   - resto de settings en `~/Library/Application Support/NimbusAgent/settings.json`.
+  - estado operativo aislado por bot bajo `~/Library/Application Support/NimbusAgent/BotConfig/`.
 
 ## Qué hay en el repo
 
@@ -34,7 +38,12 @@ Origen del agente integrado:
 
 ## Cómo funciona con Codex
 
-Nimbus usa `codex` como agente principal para trabajar con proyectos y sesiones locales.
+Nimbus usa dos procesos AIPAL independientes:
+
+- uno para `codex`, con integración compartida con Codex app
+- otro para `gemini`, bloqueado a ese runtime
+
+La prioridad del diseño es no romper el flujo actual de Codex.
 
 La integración ya no depende solo de `codex exec` por shell. Nimbus mantiene **AIPAL** como backend embebido, pero el agente `codex` se ha adaptado para usar el **SDK oficial de Codex** como transporte principal al reanudar conversaciones, con un flujo híbrido para preservar compatibilidad con Codex app:
 
@@ -102,7 +111,8 @@ Para que NimbusAgent funcione correctamente en una máquina nueva, necesitas:
 - macOS
 - Xcode para compilar la app
 - `codex` disponible en `PATH`
-- un token válido de bot de Telegram
+- `gemini` disponible en `PATH` si quieres arrancar el segundo bot
+- uno o dos tokens válidos de bot de Telegram según los bots que quieras activar
 
 ### Recomendados / opcionales según uso
 
@@ -173,13 +183,15 @@ El preflight valida:
 - runtime Node embebido
 - entrypoint de AIPAL
 - `codex` en `PATH`
+- `gemini` en `PATH` para el bot Gemini
 - comando de transcripción si está configurado
 
 ## Configuración
 
 ### General
 
-- `TELEGRAM_BOT_TOKEN`: token del bot de Telegram (se guarda en Keychain).
+- `Telegram Bot Token (Codex)`: token del bot Codex, guardado en Keychain.
+- `Telegram Bot Token (Gemini)`: token del bot Gemini, guardado en Keychain.
 - `ALLOWED_USERS` (CSV): restringe usuarios permitidos; si está vacío, el bot queda abierto.
 - `AIPAL_DROP_PENDING_UPDATES`: evita procesar mensajes pendientes al arrancar.
 - `AIPAL_AGENT_CWD`: carpeta de trabajo por defecto del agente.
@@ -189,6 +201,7 @@ Notas:
 - Si `AIPAL_AGENT_CWD` está vacío, AIPAL usa su fallback por defecto.
 - En el caso de `codex`, el proyecto activo real se resuelve por topic/sesión; `AIPAL_AGENT_CWD` actúa como valor por defecto, no como estado principal compartido.
 - Nimbus fuerza `CODEX_HOME` a `~/.codex` si no viene definido, para compartir sesiones con Codex app.
+- Cada bot usa un `XDG_CONFIG_HOME` aislado para separar `config.json`, `threads.json`, memoria y overrides.
 
 ### Avanzado
 
@@ -216,6 +229,7 @@ Ejemplos de detalles útiles:
 - ruta del runtime Node embebido
 - ruta del entrypoint de AIPAL
 - ruta resuelta de `codex`
+- ruta resuelta de `gemini`
 - ruta del comando de transcripción
 
 ## Capturas
@@ -262,16 +276,18 @@ Variables opcionales:
 Pasos recomendados:
 
 1. Instalar `codex` y comprobar que está en `PATH`.
-2. Instalar o configurar el comando de transcripción que vayas a usar (`parakeet-mlx` por defecto).
-3. Abrir `NimbusAgent.xcodeproj` en Xcode.
-4. Compilar y ejecutar la app.
-5. Abrir **Configuración** y rellenar:
-   - `TELEGRAM_BOT_TOKEN`
+2. Instalar `gemini` y comprobar que está en `PATH` si vas a usar también el segundo bot.
+3. Instalar o configurar el comando de transcripción que vayas a usar (`parakeet-mlx` por defecto).
+4. Abrir `NimbusAgent.xcodeproj` en Xcode.
+5. Compilar y ejecutar la app.
+6. Abrir **Configuración** y rellenar:
+   - `Telegram Bot Token (Codex)`
+   - `Telegram Bot Token (Gemini)` si quieres arrancar ese bot
    - `ALLOWED_USERS`
    - `AIPAL_AGENT_CWD` si quieres un cwd por defecto
    - `AIPAL_WHISPER_CMD` si no usas `parakeet-mlx`
-6. Ejecutar **Validar**.
-7. Arrancar el agente desde el menú.
+7. Ejecutar **Validar**.
+8. Arrancar uno o ambos bots desde el menú.
 
 Solo si `Embedded/` estuviera vacío, corrupto o quieres sincronizarlo con otra versión de AIPAL, ejecuta antes:
 
