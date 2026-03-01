@@ -46,10 +46,13 @@ function createCodexSdkClient(options = {}) {
     const events = [];
     const threadItems = new Map();
     let finalResponse = '';
+    const allOutputTexts = [];
+    const currentTurnOutputTexts = [];
     let usage = null;
     let resolvedThreadId = String(threadId || '').trim();
     let timer = null;
     const controller = new AbortController();
+    let sawTurnStarted = false;
 
     if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
       timer = setTimeout(() => {
@@ -75,6 +78,9 @@ function createCodexSdkClient(options = {}) {
       });
 
       for await (const rawEvent of streamedTurn.events) {
+        if (rawEvent?.type === 'turn.started') {
+          sawTurnStarted = true;
+        }
         const normalizedEvents = normalizeThreadEvent(rawEvent, {
           cwd,
           knownThreadId: resolvedThreadId || thread.id || '',
@@ -91,7 +97,10 @@ function createCodexSdkClient(options = {}) {
             await onEvent(event);
           }
           if (event.type === 'output_text' && event.text) {
-            finalResponse = event.text;
+            allOutputTexts.push(event.text);
+            if (sawTurnStarted) {
+              currentTurnOutputTexts.push(event.text);
+            }
           }
           if (event.type === 'session' && event.threadId) {
             resolvedThreadId = String(event.threadId || '').trim();
@@ -102,7 +111,11 @@ function createCodexSdkClient(options = {}) {
         }
       }
 
-      if (!finalResponse) {
+      if (currentTurnOutputTexts.length > 0) {
+        finalResponse = currentTurnOutputTexts[currentTurnOutputTexts.length - 1];
+      } else if (allOutputTexts.length > 0) {
+        finalResponse = allOutputTexts[allOutputTexts.length - 1];
+      } else if (!finalResponse) {
         finalResponse = collectAgentMessages(threadItems);
       }
 

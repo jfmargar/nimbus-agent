@@ -61,7 +61,12 @@ function createRunnerHarness(overrides = {}) {
     transport: 'sdk',
     buildCommand: () => 'codex exec resume thread-id',
     buildInteractiveNewSessionCommand: () => 'codex interactive new',
-    parseOutput: () => ({ text: 'respuesta resume', threadId: 'thread-id', sawJson: true }),
+    parseOutput: (output) => {
+      if (typeof overrides.parseOutput === 'function') {
+        return overrides.parseOutput(output);
+      }
+      return { text: 'respuesta resume', threadId: 'thread-id', sawJson: true };
+    },
     parseInteractiveOutput: (output) => {
       if (typeof overrides.parseInteractiveOutput === 'function') {
         return overrides.parseInteractiveOutput(output);
@@ -158,6 +163,17 @@ function createRunnerHarness(overrides = {}) {
         source: 'cli',
       };
     },
+    getLocalCodexSessionTurnState: async (threadId, options) => {
+      if (typeof overrides.getLocalCodexSessionTurnState === 'function') {
+        return overrides.getLocalCodexSessionTurnState(threadId, options);
+      }
+      return {
+        assistantMessage: '',
+        assistantTimestamp: '',
+        taskComplete: false,
+        taskCompleteTimestamp: '',
+      };
+    },
     getThreads: () => threads,
     imageDir: '/tmp',
     listLocalCodexSessions: async (...args) => {
@@ -166,7 +182,12 @@ function createRunnerHarness(overrides = {}) {
       }
       return [];
     },
-    listLocalCodexSessionsSince: async () => [],
+    listLocalCodexSessionsSince: async (...args) => {
+      if (typeof overrides.listLocalCodexSessionsSince === 'function') {
+        return overrides.listLocalCodexSessionsSince(...args);
+      }
+      return [];
+    },
     listSqliteCodexThreads: async () => [],
     memoryRetrievalLimit: 5,
     persistProjectOverrides: async () => {},
@@ -309,8 +330,82 @@ test('runAgentForChat can wait for interactive completion when requested', async
   assert.equal(harness.getLastExecWithPtyOptions().signal.aborted, false);
 });
 
+test('runAgentForChat does not abort interactive completion when the seed turn takes longer than the early-abort grace', async () => {
+  const harness = createRunnerHarness({
+    execLocalWithPty: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1700));
+      return 'Sesion lista.';
+    },
+    parseInteractiveOutput: () => ({ text: 'Sesion lista.', sawText: true }),
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Nombrar sesion', {
+    waitForInteractiveCompletion: true,
+  });
+
+  assert.equal(text, 'Sesion lista.');
+  assert.equal(harness.threads.get('chat:root:codex'), 'thread-cli');
+  assert.equal(harness.getLastExecWithPtyOptions().signal.aborted, false);
+});
+
+test('runAgentForChat aborts interactive creation once the local codex session reports task_complete', async () => {
+  let turnStateCalls = 0;
+  const harness = createRunnerHarness({
+    execLocalWithPty: async (_command, options) =>
+      new Promise((_, reject) => {
+        options.signal.addEventListener(
+          'abort',
+          () => {
+            const err = new Error('aborted after task_complete');
+            err.name = 'AbortError';
+            err.stdout = '';
+            reject(err);
+          },
+          { once: true }
+        );
+      }),
+    getLocalCodexSessionTurnState: async () => {
+      turnStateCalls += 1;
+      if (turnStateCalls < 3) {
+        return {
+          assistantMessage: '',
+          assistantTimestamp: '',
+          taskComplete: false,
+          taskCompleteTimestamp: '',
+        };
+      }
+      return {
+        assistantMessage: '.',
+        assistantTimestamp: '2026-03-01T09:04:14.851Z',
+        taskComplete: true,
+        taskCompleteTimestamp: '2026-03-01T09:04:14.856Z',
+      };
+    },
+    parseInteractiveOutput: () => ({ text: '', sawText: false }),
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Nombrar sesion', {
+    waitForInteractiveCompletion: true,
+  });
+
+  assert.equal(
+    text,
+    `Sesion creada y conectada en ${path.basename(
+      harness.projectDir
+    )}.\nA partir del proximo mensaje continuare esa sesion.`
+  );
+  assert.equal(harness.threads.get('chat:root:codex'), 'thread-cli');
+  assert.equal(harness.getLastExecWithPtyOptions().signal.aborted, true);
+  assert.ok(turnStateCalls >= 3);
+});
+
 test('runAgentTurnForChat can attach a visible session before interactive cleanup finishes', async () => {
   const harness = createRunnerHarness({
+    resolveThreadId: (threads) => ({
+      threadKey: 'chat:root:codex',
+      threadId: threads.get('chat:root:codex') || '',
+      migrated: false,
+    }),
     execLocalWithPty: async (_command, options) =>
       new Promise((_, reject) => {
         options.signal.addEventListener(
@@ -346,25 +441,72 @@ test('runAgentTurnForChat can attach a visible session before interactive cleanu
   await result.cleanupPromise;
 });
 
-test('runAgentTurnForChat falls back early to latest local codex session when diff misses it', async () => {
+test('runAgentForChat waits for pending session initialization before resuming the codex thread', async () => {
+  let releaseCleanup;
+  const cleanupGate = new Promise((resolve) => {
+    releaseCleanup = resolve;
+  });
+  const harness = createRunnerHarness({
+    resolveThreadId: (threads) => ({
+      threadKey: 'chat:root:codex',
+      threadId: threads.get('chat:root:codex') || '',
+      migrated: false,
+    }),
+    execLocalWithPty: async (_command, options) =>
+      new Promise((_, reject) => {
+        options.signal.addEventListener(
+          'abort',
+          async () => {
+            await cleanupGate;
+            const err = new Error('aborted');
+            err.name = 'AbortError';
+            reject(err);
+          },
+          { once: true }
+        );
+      }),
+    parseInteractiveOutput: () => ({ text: '', sawText: false }),
+    runSdkTurn: async (request) => ({
+      text: `respuesta ${request.threadId}`,
+      threadId: request.threadId,
+      conversationId: request.threadId,
+      events: [],
+    }),
+  });
+
+  const sessionCreation = await harness.runner.runAgentTurnForChat(1, 'Nombrar sesion', {
+    backgroundInteractiveCleanup: true,
+  });
+  assert.equal(sessionCreation.threadId, 'thread-cli');
+
+  let resumed = false;
+  const resumePromise = harness.runner.runAgentForChat(1, 'Siguiente turno').then((text) => {
+    resumed = true;
+    return text;
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(resumed, false);
+
+  releaseCleanup();
+  const resumedText = await resumePromise;
+  assert.equal(resumedText, 'respuesta thread-cli');
+});
+
+test('runAgentTurnForChat still detects a newly created local codex session when diff misses it', async () => {
   const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aipal-agent-runner-project-'));
-  let listCalls = 0;
   const harness = createRunnerHarness({
     projectDir,
     findNewestSessionDiff: async () => [],
-    listLocalCodexSessions: async () => {
-      listCalls += 1;
-      return listCalls === 1
-        ? []
-        : [
-            {
-              id: 'thread-fallback',
-              cwd: projectDir,
-              source: 'cli',
-              timestamp: '2026-02-27T10:00:00.000Z',
-            },
-          ];
-    },
+    listLocalCodexSessions: async () => [],
+    listLocalCodexSessionsSince: async () => [
+      {
+        id: 'thread-fallback',
+        cwd: projectDir,
+        source: 'cli',
+        timestamp: '2026-02-27T10:00:00.000Z',
+      },
+    ],
     execLocalWithPty: async (_command, options) =>
       new Promise((_, reject) => {
         options.signal.addEventListener(
@@ -390,8 +532,20 @@ test('runAgentTurnForChat falls back early to latest local codex session when di
   await result.cleanupPromise;
 });
 
-test('runAgentForChat aborts interactive creation after grace period when completion hangs', async () => {
+test('runAgentTurnForChat warns when it must reattach a previous codex session', async () => {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aipal-agent-runner-project-'));
   const harness = createRunnerHarness({
+    projectDir,
+    findNewestSessionDiff: async () => [],
+    listLocalCodexSessions: async () => [
+      {
+        id: 'thread-existing',
+        cwd: projectDir,
+        source: 'cli',
+        timestamp: '2026-02-26T10:00:00.000Z',
+      },
+    ],
+    listLocalCodexSessionsSince: async () => [],
     execLocalWithPty: async (_command, options) =>
       new Promise((_, reject) => {
         options.signal.addEventListener(
@@ -404,6 +558,64 @@ test('runAgentForChat aborts interactive creation after grace period when comple
           { once: true }
         );
       }),
+    parseInteractiveOutput: () => ({ text: '', sawText: false }),
+  });
+
+  const result = await harness.runner.runAgentTurnForChat(1, 'Nombrar sesion', {
+    waitForInteractiveCompletion: true,
+    backgroundInteractiveCleanup: true,
+  });
+
+  assert.equal(
+    result.text,
+    `No pude confirmar la creacion de una sesion nueva en ${path.basename(
+      harness.projectDir
+    )}.\nHe vuelto a conectar la sesion anterior del proyecto y seguire trabajando ahi.`
+  );
+  assert.equal(result.threadId, 'thread-existing');
+  assert.equal(result.reusedExistingSession, true);
+  assert.equal(harness.threads.get('chat:root:codex'), 'thread-existing');
+});
+
+test('runAgentTurnForChat uses interactive output thread id when session diff misses the new codex session', async () => {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aipal-agent-runner-project-'));
+  const harness = createRunnerHarness({
+    projectDir,
+    findNewestSessionDiff: async () => [],
+    listLocalCodexSessions: async () => [],
+    listLocalCodexSessionsSince: async () => [],
+    execLocalWithPty: async () => `
+Token usage: total=7215 input=7146 output=69
+To continue this session, run codex resume 019ca828-c4e9-7cc1-9be5-0a5f110110ce
+`,
+    parseInteractiveOutput: (output) => ({
+      text: '',
+      sawText: false,
+      threadId: output.includes('codex resume')
+        ? '019ca828-c4e9-7cc1-9be5-0a5f110110ce'
+        : '',
+    }),
+  });
+
+  const result = await harness.runner.runAgentTurnForChat(1, 'Nombrar sesion', {
+    waitForInteractiveCompletion: true,
+    backgroundInteractiveCleanup: true,
+  });
+
+  assert.equal(result.threadId, '019ca828-c4e9-7cc1-9be5-0a5f110110ce');
+  assert.equal(result.reusedExistingSession, false);
+  assert.equal(harness.threads.get('chat:root:codex'), '019ca828-c4e9-7cc1-9be5-0a5f110110ce');
+});
+
+test('runAgentForChat waits for the interactive timeout instead of aborting when completion is explicitly requested', async () => {
+  const harness = createRunnerHarness({
+    execLocalWithPty: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const err = new Error('Command timed out after 1000ms');
+      err.code = 'ETIMEDOUT';
+      err.stdout = 'Tip: Use /help for commands';
+      throw err;
+    },
     parseInteractiveOutput: () => ({ text: '', sawText: false }),
   });
 
@@ -420,7 +632,7 @@ test('runAgentForChat aborts interactive creation after grace period when comple
     )}.\nA partir del proximo mensaje continuare esa sesion.`
   );
   assert.equal(harness.threads.get('chat:root:codex'), 'thread-cli');
-  assert.equal(harness.getLastExecWithPtyOptions().signal.aborted, true);
+  assert.equal(harness.getLastExecWithPtyOptions().signal.aborted, false);
   assert.ok(elapsedMs < 10000);
 });
 

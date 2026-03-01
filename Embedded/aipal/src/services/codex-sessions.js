@@ -206,6 +206,65 @@ function extractLastSessionMessageFromTail(tailContent) {
   return '';
 }
 
+function extractSessionTurnStateFromTail(tailContent, options = {}) {
+  const sinceTs = normalizeDateInput(options.sinceTs);
+  const state = {
+    assistantMessage: '',
+    assistantTimestamp: '',
+    taskComplete: false,
+    taskCompleteTimestamp: '',
+  };
+  const lines = String(tailContent || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (let i = 0; i < lines.length; i += 1) {
+    let entry;
+    try {
+      entry = JSON.parse(lines[i]);
+    } catch {
+      continue;
+    }
+    const entryTs = normalizeDateInput(entry?.timestamp);
+    if (sinceTs > 0 && entryTs > 0 && entryTs < sinceTs) {
+      continue;
+    }
+
+    const type = String(entry?.type || '').trim().toLowerCase();
+    const payload = entry?.payload;
+    if (
+      type === 'response_item' &&
+      String(payload?.type || '').trim().toLowerCase() === 'message' &&
+      String(payload?.role || '').trim().toLowerCase() === 'assistant'
+    ) {
+      const text = extractTextFromContent(payload);
+      if (text) {
+        state.assistantMessage = text;
+        state.assistantTimestamp = String(entry?.timestamp || '').trim();
+      }
+      continue;
+    }
+
+    if (
+      type === 'event_msg' &&
+      String(payload?.type || '').trim().toLowerCase() === 'task_complete'
+    ) {
+      state.taskComplete = true;
+      state.taskCompleteTimestamp = String(entry?.timestamp || '').trim();
+      if (!state.assistantMessage && typeof payload?.last_agent_message === 'string') {
+        const text = String(payload.last_agent_message || '').trim();
+        if (text) {
+          state.assistantMessage = text;
+          state.assistantTimestamp = String(entry?.timestamp || '').trim();
+        }
+      }
+    }
+  }
+
+  return state;
+}
+
 async function listLocalCodexSessions(options = {}) {
   const sessionsDir = options.sessionsDir || DEFAULT_SESSIONS_DIR;
   const limit = normalizeLimit(options.limit);
@@ -310,6 +369,51 @@ async function getLocalCodexSessionLastMessage(sessionId, options = {}) {
   }
 }
 
+async function getLocalCodexSessionTurnState(sessionId, options = {}) {
+  const id = String(sessionId || '').trim();
+  if (!isValidSessionId(id)) {
+    return {
+      assistantMessage: '',
+      assistantTimestamp: '',
+      taskComplete: false,
+      taskCompleteTimestamp: '',
+    };
+  }
+  const sessionsDir = options.sessionsDir || DEFAULT_SESSIONS_DIR;
+
+  let filePath = '';
+  if (typeof options.filePath === 'string' && options.filePath.trim()) {
+    filePath = options.filePath.trim();
+  } else {
+    const found = await getLocalCodexSessionMeta(id, {
+      sessionsDir,
+    });
+    filePath = found?.filePath || '';
+  }
+  if (!filePath) {
+    return {
+      assistantMessage: '',
+      assistantTimestamp: '',
+      taskComplete: false,
+      taskCompleteTimestamp: '',
+    };
+  }
+
+  try {
+    const tail = await readTail(filePath);
+    return extractSessionTurnStateFromTail(tail, {
+      sinceTs: options.sinceTs,
+    });
+  } catch {
+    return {
+      assistantMessage: '',
+      assistantTimestamp: '',
+      taskComplete: false,
+      taskCompleteTimestamp: '',
+    };
+  }
+}
+
 function normalizeSqliteRows(value) {
   return String(value || '')
     .split(/\r?\n/)
@@ -386,6 +490,7 @@ module.exports = {
   findNewestSessionDiff,
   getLocalCodexSessionMeta,
   getLocalCodexSessionLastMessage,
+  getLocalCodexSessionTurnState,
   isValidSessionId,
   listLocalCodexSessions,
   listLocalCodexSessionsSince,

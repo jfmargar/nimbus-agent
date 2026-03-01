@@ -10,9 +10,6 @@ const MENU_NAV_TTL_MS = 30 * 60 * 1000;
 const MENU_PROJECT_PAGE_SIZE = 8;
 const MENU_SESSION_PAGE_SIZE = 6;
 const MENU_SEARCH_MAX_RESULTS = 200;
-const SESSION_NAME_MAX_CHARS = 120;
-const AUTO_SEND_CLEANUP_WAIT_MS = 800;
-
 const MENU_BTN_SEARCH = 'Buscar';
 const MENU_BTN_PREV = 'Anterior';
 const MENU_BTN_NEXT = 'Siguiente';
@@ -21,6 +18,7 @@ const MENU_BTN_NEW_SESSION = 'Nueva sesión';
 const MENU_BTN_CREATE_PROJECT_SESSION = 'Crear nueva sesión';
 const MENU_BTN_LAST_PROJECT_SESSION = 'Continuar última sesión';
 const MENU_EXPIRED_MESSAGE = 'Este menú expiró o fue reemplazado. Usa /menu.';
+const CODEX_SESSION_SEED_PROMPT = 'Nimbus nueva sesión';
 const menuNavCache = new Map();
 const RESERVED_MENU_LABELS = new Set([
   'projects',
@@ -67,42 +65,6 @@ function normalizeMenuText(value) {
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
-}
-
-function normalizeSessionName(value) {
-  return String(value || '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function buildSessionSeedPrompt(sessionName) {
-  const normalizedName = normalizeSessionName(sessionName);
-  return [
-    normalizedName,
-    '',
-    'Este mensaje solo establece el nombre de la sesion.',
-    'Responde solo: "Sesion lista."',
-    'Despues espera la siguiente solicitud del usuario.',
-  ].join('\n');
-}
-
-function parseSessionCreationInput(value) {
-  const normalized = String(value || '').replace(/\r\n/g, '\n').trim();
-  if (!normalized) {
-    return {
-      sessionName: '',
-      initialRequest: '',
-    };
-  }
-  const [firstLine = '', ...rest] = normalized.split('\n');
-  return {
-    sessionName: normalizeSessionName(firstLine),
-    initialRequest: rest.join('\n').trim(),
-  };
-}
-
-function waitMs(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function createMenuInstanceId() {
@@ -888,15 +850,38 @@ function registerSettingsCommands(options) {
       return;
     }
 
-    setAwaitingSessionNameState(chatId, topicId, cwd);
-    await ctx.reply(
-      `Proyecto activo: ${projectNameFromCwd(
-        cwd
-      )}\nEscribe el nombre de la sesión en la primera línea. Si quieres, añade debajo tu primera solicitud y la enviaré al crearla.`,
-      {
-        reply_markup: buildMainMenuKeyboard(),
-      }
+    setMainMenuState(chatId, topicId);
+    const feedback = await createExecutionFeedback(
+      ctx,
+      effectiveAgentId,
+      'Codex: creando sesion inicial...'
     );
+    try {
+      const result = await runAgentTurnForChat(chatId, CODEX_SESSION_SEED_PROMPT, {
+        topicId,
+        thinkingOverride: 'minimal',
+        waitForInteractiveCompletion: true,
+      });
+      feedback.stopTyping();
+      if (feedback.progress) {
+        await feedback.progress.finish();
+      }
+      const replyText = result?.reusedExistingSession
+        ? result.text
+        : `Sesion creada y conectada en ${projectNameFromCwd(
+            cwd
+          )}.\nEscribe tu primera solicitud.`;
+      await ctx.reply(replyText, {
+        reply_markup: buildMainMenuKeyboard(),
+      });
+    } catch (err) {
+      console.error(err);
+      feedback.stopTyping();
+      if (feedback.progress) {
+        await feedback.progress.fail('Codex: error durante la creacion de la sesion.');
+      }
+      await replyWithError(ctx, 'No pude crear una sesion nueva de Codex.', err);
+    }
   }
 
   async function attachLastSessionForProject(ctx, state) {
@@ -1588,18 +1573,6 @@ function registerSettingsCommands(options) {
         return next();
       }
 
-      const { sessionName, initialRequest } = parseSessionCreationInput(text);
-      if (!sessionName) {
-        await ctx.reply('Escribe un nombre breve para la sesión.');
-        return;
-      }
-      if (sessionName.length > SESSION_NAME_MAX_CHARS) {
-        await ctx.reply(
-          `Usa un nombre más corto para la sesión (máximo ${SESSION_NAME_MAX_CHARS} caracteres).`
-        );
-        return;
-      }
-
       const chatId = ctx.chat.id;
       const topicId = getTopicId(ctx);
       const effectiveAgentId = effectiveAgentFor(chatId, topicId);
@@ -1617,85 +1590,36 @@ function registerSettingsCommands(options) {
       const feedback = await createExecutionFeedback(
         ctx,
         effectiveAgentId,
-        'Codex: creando sesion...'
+        'Codex: creando sesion y enviando tu primera solicitud...'
       );
       try {
-        const sessionCreation = await runAgentTurnForChat(
+        await captureMemoryEvent({
+          threadKey: memoryThreadKey,
           chatId,
-          buildSessionSeedPrompt(sessionName),
-          {
-            topicId,
-            onEvent: feedback.onEvent,
-            waitForInteractiveCompletion: true,
-            backgroundInteractiveCleanup: true,
-          }
-        );
-        if (initialRequest) {
-          const cleanupFinishedQuickly = sessionCreation?.cleanupPromise
-            ? await Promise.race([
-                sessionCreation.cleanupPromise.then(() => true),
-                waitMs(AUTO_SEND_CLEANUP_WAIT_MS).then(() => false),
-              ])
-            : true;
-          if (!cleanupFinishedQuickly) {
-            feedback.stopTyping();
-            if (feedback.progress) {
-              await feedback.progress.finish();
-            }
-            await ctx.reply(
-              `Sesión "${sessionName}" creada en ${projectNameFromCwd(
-                cwd
-              )}.\nLa he conectado al tópico, pero sigue cerrándose en Codex. Envía ahora tu primera solicitud.`,
-              {
-                reply_markup: buildMainMenuKeyboard(),
-              }
-            );
-            return;
-          }
-          await captureMemoryEvent({
-            threadKey: memoryThreadKey,
-            chatId,
-            topicId,
-            agentId: effectiveAgentId,
-            role: 'user',
-            kind: 'text',
-            text: initialRequest,
-          });
-          if (feedback.progress) {
-            await feedback.progress.update('Codex: enviando primera solicitud...');
-          }
-          const response = await runAgentForChat(chatId, initialRequest, {
-            topicId,
-            onEvent: feedback.onEvent,
-          });
-          await captureMemoryEvent({
-            threadKey: memoryThreadKey,
-            chatId,
-            topicId,
-            agentId: effectiveAgentId,
-            role: 'assistant',
-            kind: 'text',
-            text: extractMemoryText(response),
-          });
-          feedback.stopTyping();
-          if (feedback.progress) {
-            await feedback.progress.finish();
-          }
-          await replyWithResponse(ctx, response);
-          return;
-        }
+          topicId,
+          agentId: effectiveAgentId,
+          role: 'user',
+          kind: 'text',
+          text,
+        });
+        const response = await runAgentForChat(chatId, text, {
+          topicId,
+          onEvent: feedback.onEvent,
+        });
+        await captureMemoryEvent({
+          threadKey: memoryThreadKey,
+          chatId,
+          topicId,
+          agentId: effectiveAgentId,
+          role: 'assistant',
+          kind: 'text',
+          text: extractMemoryText(response),
+        });
         feedback.stopTyping();
         if (feedback.progress) {
           await feedback.progress.finish();
         }
-        await ctx.reply(
-          `Sesión "${sessionName}" creada en ${projectNameFromCwd(
-            cwd
-          )}.\nEnvía ahora tu primera solicitud.`,
-          {
-            reply_markup: buildMainMenuKeyboard(),
-          }
-        );
+        await replyWithResponse(ctx, response);
         return;
       } catch (err) {
         console.error(err);
@@ -1704,7 +1628,7 @@ function registerSettingsCommands(options) {
           await feedback.progress.fail('Codex: error durante la ejecucion.');
         }
         menuNavCache.set(key, restoreState);
-        await replyWithError(ctx, 'No pude crear la sesión de Codex.', err);
+        await replyWithError(ctx, 'No pude crear la sesión de Codex ni enviar tu primera solicitud.', err);
         return;
       }
     }
