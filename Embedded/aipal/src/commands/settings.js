@@ -358,6 +358,7 @@ function registerSettingsCommands(options) {
     getTopicId,
     isKnownAgent,
     isModelResetCommand,
+    lockedAgentId,
     normalizeAgent,
     normalizeTopicId,
     resolveThreadId,
@@ -405,6 +406,7 @@ function registerSettingsCommands(options) {
   }
 
   function effectiveAgentFor(chatId, topicId) {
+    if (lockedAgentId) return lockedAgentId;
     return getAgentOverride(chatId, topicId) || getGlobalAgent();
   }
 
@@ -960,6 +962,16 @@ function registerSettingsCommands(options) {
     const value = extractCommandValue(ctx.message.text);
     const topicId = getTopicId(ctx);
     const normalizedTopic = normalizeTopicId(topicId);
+
+    if (lockedAgentId) {
+      const label = getAgentLabel(lockedAgentId);
+      if (!value) {
+        ctx.reply(`Current agent (${normalizedTopic}): ${label}. This bot is locked to ${label}.`);
+        return;
+      }
+      ctx.reply(`This bot is locked to ${label}. \`/agent\` is disabled here.`);
+      return;
+    }
 
     if (!value) {
       const effective =

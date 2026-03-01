@@ -5,6 +5,7 @@ function registerHelpCommands(options) {
     enqueue,
     extractCommandValue,
     markdownToTelegramHtml,
+    lockedAgentId,
     replyWithError,
     runAgentOneShot,
     scriptManager,
@@ -12,9 +13,14 @@ function registerHelpCommands(options) {
   } = options;
 
   bot.command('help', async (ctx) => {
+    const lockedAgentLabel = lockedAgentId
+      ? `Locked to ${String(lockedAgentId).trim().toLowerCase()}`
+      : null;
     const builtIn = [
       '/start - Hello world',
-      '/agent <name> - Switch agent (codex, claude, gemini, opencode)',
+      lockedAgentLabel
+        ? `/agent - ${lockedAgentLabel}`
+        : '/agent <name> - Switch agent (codex, claude, gemini, opencode)',
       '/thinking <level> - Set reasoning effort',
       '/model [model_id|reset] - View/set/reset model for current agent',
       '/project [path|reset] - Set project working directory',

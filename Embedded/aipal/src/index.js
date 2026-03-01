@@ -146,6 +146,11 @@ const { buildMainMenuKeyboard } = require('./commands/menu-keyboard');
 
 installLogTimestamps();
 
+const LOCKED_AGENT = isKnownAgent(process.env.AIPAL_LOCKED_AGENT)
+  ? normalizeAgent(process.env.AIPAL_LOCKED_AGENT)
+  : '';
+const DEFAULT_AGENT = LOCKED_AGENT || AGENT_CODEX;
+
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 if (!BOT_TOKEN) {
   console.error('Missing TELEGRAM_BOT_TOKEN');
@@ -175,7 +180,7 @@ if (allowedUsers.size > 0) {
   );
 }
 
-const appState = createAppState({ defaultAgent: AGENT_CODEX });
+const appState = createAppState({ defaultAgent: DEFAULT_AGENT });
 const { queues, threadTurns, lastScriptOutputs } = appState;
 let {
   threads,
@@ -189,7 +194,7 @@ let {
 const SCRIPT_CONTEXT_MAX_CHARS = 8000;
 let memoryEventsSinceCurate = 0;
 let globalThinking;
-let globalAgent = AGENT_CODEX;
+let globalAgent = DEFAULT_AGENT;
 let globalModels = {};
 let globalAgentCwd = AGENT_CWD;
 let cronDefaultChatId = null;
@@ -361,6 +366,9 @@ function persistMemory(task) {
 }
 
 function resolveEffectiveAgentId(chatId, topicId, overrideAgentId) {
+  if (LOCKED_AGENT) {
+    return LOCKED_AGENT;
+  }
   return (
     overrideAgentId ||
     getAgentOverride(agentOverrides, chatId, topicId) ||
@@ -417,7 +425,11 @@ let cronScheduler = null;
 
 async function hydrateGlobalSettings() {
   const config = await readConfig();
-  if (config.agent) globalAgent = normalizeAgent(config.agent);
+  if (LOCKED_AGENT) {
+    globalAgent = LOCKED_AGENT;
+  } else if (config.agent) {
+    globalAgent = normalizeAgent(config.agent);
+  }
   if (config.models) globalModels = { ...config.models };
   if (typeof config.agentCwd === 'string' && config.agentCwd.trim()) {
     globalAgentCwd = config.agentCwd;
@@ -490,6 +502,7 @@ registerCommands({
   memoryRetrievalLimit: MEMORY_RETRIEVAL_LIMIT,
   normalizeAgent,
   normalizeTopicId,
+  lockedAgentId: LOCKED_AGENT,
   persistAgentOverrides,
   persistMemory,
   persistProjectOverrides,
@@ -508,7 +521,7 @@ registerCommands({
   setAgentOverride: (chatId, topicId, agentId) =>
     setAgentOverride(agentOverrides, chatId, topicId, agentId),
   setGlobalAgent: (value) => {
-    globalAgent = value;
+    globalAgent = LOCKED_AGENT || value;
   },
   setGlobalAgentCwd: (value) => {
     globalAgentCwd = String(value || '').trim();
@@ -529,6 +542,7 @@ registerCommands({
   updateConfig,
   wrapCommandWithPty,
   runAgentOneShot,
+  lockedAgentId: LOCKED_AGENT,
 });
 
 registerHandlers({
