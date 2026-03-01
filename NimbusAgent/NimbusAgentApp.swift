@@ -9,25 +9,51 @@ struct NimbusMenuView: View {
             Text("Nimbus")
                 .font(.headline)
 
-            Text(model.runState.label)
+            Text(model.overallRunStateLabel)
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             Divider()
 
-            Button("Iniciar agente") {
-                model.startAgent()
-            }
-            .disabled(!model.canStart)
+            ForEach(NimbusBot.allCases) { bot in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(bot.label)
+                        .font(.subheadline.weight(.semibold))
+                    Text(model.runState(for: bot).label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
-            Button("Detener agente") {
-                model.stopAgent()
+                    HStack {
+                        Button("Iniciar") {
+                            model.startBot(bot)
+                        }
+                        .disabled(!model.canStart(bot))
+
+                        Button("Detener") {
+                            model.stopBot(bot)
+                        }
+                        .disabled(!model.canStop(bot))
+                    }
+                }
+
+                if bot != NimbusBot.allCases.last {
+                    Divider()
+                }
             }
-            .disabled({
-                if case .running = model.runState { return false }
-                if case .starting = model.runState { return false }
-                return true
-            }())
+
+            Divider()
+
+            HStack {
+                Button("Iniciar ambos") {
+                    model.startAllBots()
+                }
+                .disabled(!model.canStartAnyBot)
+
+                Button("Detener ambos") {
+                    model.stopAllBots()
+                }
+                .disabled(!model.canStopAnyBot)
+            }
 
             Button("Configuración") {
                 openWindow(id: "settings")
@@ -44,7 +70,7 @@ struct NimbusMenuView: View {
             }
         }
         .padding(12)
-        .frame(minWidth: 250)
+        .frame(minWidth: 280)
     }
 }
 
@@ -53,7 +79,7 @@ struct NimbusAgentApp: App {
     @StateObject private var model = NimbusAppModel()
 
     var body: some Scene {
-        MenuBarExtra("Nimbus", systemImage: model.runState.iconName) {
+        MenuBarExtra("Nimbus", systemImage: model.overallIconName) {
             NimbusMenuView(model: model)
         }
         .menuBarExtraStyle(.window)
@@ -61,7 +87,7 @@ struct NimbusAgentApp: App {
         Window("Configuración", id: "settings") {
             SettingsView(model: model)
         }
-        .defaultSize(width: 680, height: 520)
+        .defaultSize(width: 700, height: 560)
 
         Window("Diagnóstico", id: "diagnostics") {
             DiagnosticsView(model: model)

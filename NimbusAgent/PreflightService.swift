@@ -11,17 +11,18 @@ struct PreflightReport {
 }
 
 final class PreflightService {
-    func run(settings: NimbusSettings, token: String, nodeURL: URL?, entryURL: URL?) -> PreflightReport {
+    func run(bot: NimbusBot, settings: NimbusSettings, token: String, nodeURL: URL?, entryURL: URL?) -> PreflightReport {
         var errors: [String] = []
         var warnings: [String] = []
         var details: [String] = []
-        let effectiveEnv = EnvAssembler.build(settings: settings, token: token)
+        let effectiveEnv = EnvAssembler.build(settings: settings, token: token, bot: bot)
         let effectiveCodexHome = effectiveEnv["CODEX_HOME"] ?? EnvAssembler.effectiveCodexHome()
         let defaultCodexHome = "\(NSHomeDirectory())/.codex"
+        let requiredCommand = bot == .codex ? "codex" : "gemini"
 
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedToken.isEmpty {
-            errors.append("Falta TELEGRAM_BOT_TOKEN. Configúralo en Ajustes > General.")
+            errors.append("Falta TELEGRAM_BOT_TOKEN para \(bot.label). Configúralo en Ajustes > General.")
         }
 
         errors.append(contentsOf: settings.validationErrors())
@@ -52,21 +53,25 @@ final class PreflightService {
             errors.append("No se pudo resolver la ruta del entrypoint de Aipal.")
         }
 
-        if let codexPath = ShellResolver.resolveCommandPath("codex") {
-            details.append("codex: \(codexPath)")
-            if let version = Self.readCommandOutput(executablePath: codexPath, arguments: ["--version"]) {
-                details.append("codex version: \(version)")
+        if let commandPath = ShellResolver.resolveCommandPath(requiredCommand) {
+            details.append("\(requiredCommand): \(commandPath)")
+            if let version = Self.readCommandOutput(executablePath: commandPath, arguments: ["--version"]) {
+                details.append("\(requiredCommand) version: \(version)")
             }
         } else {
-            errors.append("No se encontró `codex` en PATH. Si lo tienes instalado, reinicia Nimbus o verifica tu PATH en zsh.")
+            errors.append("No se encontró `\(requiredCommand)` en PATH. Si lo tienes instalado, reinicia Nimbus o verifica tu PATH en zsh.")
         }
 
-        details.append("Codex integration: SDK")
-        details.append("CODEX_HOME: \(effectiveCodexHome)")
-        details.append("Codex approval: \(settings.codexApprovalMode)")
-        details.append("Codex sandbox: \(settings.codexSandboxMode)")
-        details.append("Codex progress updates: \(settings.codexProgressUpdates ? "enabled" : "disabled")")
-        if effectiveCodexHome != defaultCodexHome {
+        details.append("Locked agent: \(bot.lockedAgentId)")
+        details.append("XDG_CONFIG_HOME: \(effectiveEnv["XDG_CONFIG_HOME"] ?? "(unset)")")
+        if bot == .codex {
+            details.append("Codex integration: SDK")
+            details.append("CODEX_HOME: \(effectiveCodexHome)")
+            details.append("Codex approval: \(settings.codexApprovalMode)")
+            details.append("Codex sandbox: \(settings.codexSandboxMode)")
+            details.append("Codex progress updates: \(settings.codexProgressUpdates ? "enabled" : "disabled")")
+        }
+        if bot == .codex, effectiveCodexHome != defaultCodexHome {
             warnings.append("CODEX_HOME efectivo no apunta a \(defaultCodexHome). Nimbus compartirá sesiones con esa ruta alternativa.")
         }
 

@@ -1,5 +1,38 @@
 import Foundation
 
+enum NimbusBot: String, CaseIterable, Identifiable {
+    case codex
+    case gemini
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .codex:
+            return "Codex"
+        case .gemini:
+            return "Gemini"
+        }
+    }
+
+    var lockedAgentId: String {
+        switch self {
+        case .codex:
+            return "codex"
+        case .gemini:
+            return "gemini"
+        }
+    }
+
+    var tokenKeychainAccount: String {
+        "TELEGRAM_BOT_TOKEN_\(rawValue.uppercased())"
+    }
+
+    var configHomeComponent: String {
+        rawValue
+    }
+}
+
 struct NimbusSettings: Codable, Equatable {
     var allowedUsers: String
     var agentCwd: String
@@ -173,7 +206,16 @@ struct EnvAssembler {
         return "\(NSHomeDirectory())/.codex"
     }
 
-    static func build(settings: NimbusSettings, token: String) -> [String: String] {
+    static func configHome(for bot: NimbusBot) -> URL {
+        let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support", isDirectory: true)
+        return baseURL
+            .appendingPathComponent("NimbusAgent", isDirectory: true)
+            .appendingPathComponent("BotConfig", isDirectory: true)
+            .appendingPathComponent(bot.configHomeComponent, isDirectory: true)
+    }
+
+    static func build(settings: NimbusSettings, token: String, bot: NimbusBot) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
 
         env["PATH"] = ShellResolver.mergedPathValue()
@@ -181,9 +223,11 @@ struct EnvAssembler {
             env["HOME"] = NSHomeDirectory()
         }
         env["CODEX_HOME"] = effectiveCodexHome(from: env)
+        env["XDG_CONFIG_HOME"] = configHome(for: bot).path
         env["TELEGRAM_BOT_TOKEN"] = token
         env["ALLOWED_USERS"] = settings.allowedUsers.trimmingCharacters(in: .whitespacesAndNewlines)
         env["AIPAL_DROP_PENDING_UPDATES"] = settings.dropPendingUpdates ? "true" : "false"
+        env["AIPAL_LOCKED_AGENT"] = bot.lockedAgentId
 
         let trimmedCwd = settings.agentCwd.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedCwd.isEmpty {

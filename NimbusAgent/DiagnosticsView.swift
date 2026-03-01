@@ -5,33 +5,46 @@ struct DiagnosticsView: View {
     @ObservedObject var model: NimbusAppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        TabView {
+            ForEach(NimbusBot.allCases) { bot in
+                diagnosticsPane(for: bot)
+                    .tabItem { Label(bot.label, systemImage: bot == .codex ? "bolt.circle" : "sparkles") }
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 760, minHeight: 560)
+    }
+
+    private func diagnosticsPane(for bot: NimbusBot) -> some View {
+        let report = model.preflight(for: bot)
+
+        return VStack(alignment: .leading, spacing: 12) {
             GroupBox("Estado") {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Proceso: \(model.runState.label)")
+                    Text("Proceso: \(model.runState(for: bot).label)")
 
-                    if !model.preflight.errors.isEmpty {
+                    if !report.errors.isEmpty {
                         Text("Errores preflight:")
                             .font(.headline)
-                        ForEach(model.preflight.errors, id: \.self) { item in
+                        ForEach(report.errors, id: \.self) { item in
                             Text("• \(item)")
                                 .foregroundStyle(.red)
                         }
                     }
 
-                    if !model.preflight.warnings.isEmpty {
+                    if !report.warnings.isEmpty {
                         Text("Warnings:")
                             .font(.headline)
-                        ForEach(model.preflight.warnings, id: \.self) { item in
+                        ForEach(report.warnings, id: \.self) { item in
                             Text("• \(item)")
                                 .foregroundStyle(.orange)
                         }
                     }
 
-                    if !model.preflight.details.isEmpty {
+                    if !report.details.isEmpty {
                         Text("Detalles:")
                             .font(.headline)
-                        ForEach(model.preflight.details, id: \.self) { item in
+                        ForEach(report.details, id: \.self) { item in
                             Text("• \(item)")
                                 .foregroundStyle(.secondary)
                         }
@@ -42,7 +55,7 @@ struct DiagnosticsView: View {
 
             GroupBox("Logs") {
                 ScrollView {
-                    Text(model.logs.joined(separator: "\n"))
+                    Text(model.logs(for: bot).joined(separator: "\n"))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                         .font(.system(.caption, design: .monospaced))
@@ -52,18 +65,14 @@ struct DiagnosticsView: View {
 
             HStack {
                 Button("Refrescar preflight") {
-                    model.refreshPreflight()
+                    model.refreshPreflight(for: bot)
                 }
                 Spacer()
                 Button("Copiar diagnóstico") {
-                    let payload = (["Estado: \(model.runState.label)"] + model.preflight.errors + model.preflight.warnings + model.preflight.details + model.logs)
-                        .joined(separator: "\n")
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(payload, forType: .string)
+                    NSPasteboard.general.setString(model.diagnosticsText(for: bot), forType: .string)
                 }
             }
         }
-        .padding(16)
-        .frame(minWidth: 700, minHeight: 520)
     }
 }

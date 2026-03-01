@@ -22,23 +22,28 @@ struct SettingsView: View {
     private var generalTab: some View {
         VStack(alignment: .leading, spacing: 12) {
             Form {
-                SecureField("Telegram Bot Token", text: $model.telegramToken)
+                Section("Bots") {
+                    SecureField("Telegram Bot Token (Codex)", text: $model.codexToken)
+                    SecureField("Telegram Bot Token (Gemini)", text: $model.geminiToken)
+                }
 
-                TextField("ALLOWED_USERS (CSV)", text: $model.settings.allowedUsers)
-                    .textFieldStyle(.roundedBorder)
-
-                Toggle("AIPAL_DROP_PENDING_UPDATES", isOn: $model.settings.dropPendingUpdates)
-
-                HStack {
-                    TextField("AIPAL_AGENT_CWD", text: $model.settings.agentCwd)
+                Section("Compartido") {
+                    TextField("ALLOWED_USERS (CSV)", text: $model.settings.allowedUsers)
                         .textFieldStyle(.roundedBorder)
-                    Button("Seleccionar carpeta") {
-                        model.pickAgentDirectory()
+
+                    Toggle("AIPAL_DROP_PENDING_UPDATES", isOn: $model.settings.dropPendingUpdates)
+
+                    HStack {
+                        TextField("AIPAL_AGENT_CWD", text: $model.settings.agentCwd)
+                            .textFieldStyle(.roundedBorder)
+                        Button("Seleccionar carpeta") {
+                            model.pickAgentDirectory()
+                        }
                     }
                 }
             }
 
-            Text("El token se guarda en Keychain. El resto en settings.json de Nimbus.")
+            Text("Cada token se guarda en Keychain. El resto en settings.json de Nimbus. Los bots comparten usuarios permitidos y ajustes avanzados.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -80,44 +85,31 @@ struct SettingsView: View {
 
     private var diagnosticsTab: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Estado: \(model.runState.label)")
+            Text(model.overallRunStateLabel)
+                .font(.subheadline)
 
-            if !model.preflight.errors.isEmpty {
-                Text("Errores preflight")
-                    .font(.headline)
-                ForEach(model.preflight.errors, id: \.self) { item in
-                    Text("• \(item)")
-                        .foregroundStyle(.red)
-                }
-            }
-
-            if !model.preflight.warnings.isEmpty {
-                Text("Warnings")
-                    .font(.headline)
-                ForEach(model.preflight.warnings, id: \.self) { item in
-                    Text("• \(item)")
-                        .foregroundStyle(.orange)
-                }
-            }
-
-            GroupBox("Logs recientes") {
-                ScrollView {
-                    Text(model.logs.suffix(80).joined(separator: "\n"))
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
+            ForEach(NimbusBot.allCases) { bot in
+                GroupBox(bot.label) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(model.runState(for: bot).label)
+                        Text(model.logs(for: bot).suffix(6).joined(separator: "\n"))
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
 
             HStack {
                 Button("Refrescar") {
-                    model.refreshPreflight()
+                    model.refreshAllPreflight()
                 }
                 Spacer()
                 Button("Copiar diagnóstico") {
-                    let payload = (["Estado: \(model.runState.label)"] + model.preflight.errors + model.preflight.warnings + model.preflight.details + model.logs)
-                        .joined(separator: "\n")
+                    let payload = NimbusBot.allCases
+                        .map { model.diagnosticsText(for: $0) }
+                        .joined(separator: "\n\n")
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(payload, forType: .string)
                 }
@@ -130,7 +122,7 @@ struct SettingsView: View {
     private var actionRow: some View {
         HStack {
             Button("Validar") {
-                model.refreshPreflight()
+                model.refreshAllPreflight()
             }
 
             Button("Guardar") {
