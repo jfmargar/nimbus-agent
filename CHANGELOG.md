@@ -6,20 +6,25 @@ The format is based on Keep a Changelog.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-03-01
+
 ### Added
 - Official Codex SDK integration inside the embedded AIPAL runtime for structured resumed turns
 - Telegram progress updates for Codex execution states instead of relying only on typing indicators
 - Codex integration settings for approval mode, sandbox mode, and progress visibility in the macOS app
-- Session naming flow for `Crear nueva sesión`, so the first user message can be used as the visible session title
 
 ### Changed
 - Codex now uses a hybrid transport:
   - new visible sessions are created through the interactive CLI flow
   - existing sessions are resumed through the official Codex SDK
-- New session creation now keeps compatibility with Codex app visibility while preserving SDK-based progress and error handling
+- New session creation from Telegram now opens the visible Codex session immediately for the selected project and then continues later turns through the SDK
+- The technical seed turn used to create visible Codex sessions is now minimized so the Telegram flow stays faster while Codex App still shows a clean, reusable session
 
 ### Fixed
 - Local Codex session reconciliation after interactive creation is more robust for project-bound sessions
+- Creating a new Codex session no longer silently reattaches the previous project session without warning when Nimbus cannot confirm the new one
+- Interactive Codex session startup now stops as soon as the first assistant turn is persisted locally, reducing the long wait that previously happened before Telegram reported the session as ready
+- The initial visible Codex session created from Telegram no longer tends to leave a hanging `Pensando` entry in Codex App
 - Progress messages no longer stay stuck in `Codex: iniciando sesion...` when creation fails
 - New Codex sessions are resolved back to the correct topic and project more consistently
 - Embedded runtime notarization now strips bundled `biome`, re-signs embedded `rg`/`codex`, and signs the bundled `node` binary with the Hardened Runtime JIT entitlement so the agent can start correctly

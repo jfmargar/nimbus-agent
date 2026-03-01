@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [0.3.2] - 2026-03-01
+
+### Changed
+- Codex visible sessions now finish their seed turn as soon as the local session jsonl reports the first persisted `task_complete`, reducing the wait before Telegram reports the session as ready.
+- The Telegram project flow now creates the visible Codex session immediately again with a minimal technical prompt before later turns continue through the SDK.
+
+### Fixed
+- New Codex session creation now warns explicitly when AIPAL must fall back to the previous project session instead of confirming a new one.
+- PTY-backed Codex session startup now closes more cleanly after the first persisted assistant turn, reducing the chance of leaving a hanging `Pensando` entry in Codex App.
+- Added regression coverage for visible-session creation, persisted first-turn detection, and fallback-to-existing-session behavior.
+
 ## [0.3.1] - 2026-02-19
 ### Added
 - `/model reset` to clear the current agent model override and return to its default model.
