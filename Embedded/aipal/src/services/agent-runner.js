@@ -57,6 +57,7 @@ function createAgentRunner(options) {
     getGlobalModels,
     getGlobalThinking,
     getLocalCodexSessionMeta,
+    getLocalCodexSessionTurnState,
     getThreads,
     imageDir,
     listLocalCodexSessionsSince,
@@ -80,6 +81,7 @@ function createAgentRunner(options) {
   const interactiveEarlyAbortGraceMs = 600;
   const cliSessionResolveAttempts = 16;
   const cliSessionResolveIntervalMs = 250;
+  const pendingCodexInitializations = new Map();
   const codexSdkClient = createCodexSdkClient({
     agentTimeoutMs,
     approvalMode: codexApprovalMode,
@@ -190,6 +192,23 @@ function createAgentRunner(options) {
       }
     } catch (err) {
       console.warn('Failed to sync project override from session metadata:', err);
+    }
+  }
+
+  async function waitForPendingCodexInitialization(threadKey, meta = {}) {
+    const pending = pendingCodexInitializations.get(threadKey);
+    if (!pending) return;
+    console.info(
+      `Agent waiting for pending codex initialization chat=${meta.chatId} topic=${
+        meta.topicId || 'root'
+      } threadKey=${threadKey}`
+    );
+    try {
+      await pending;
+    } finally {
+      if (pendingCodexInitializations.get(threadKey) === pending) {
+        pendingCodexInitializations.delete(threadKey);
+      }
     }
   }
 
@@ -362,6 +381,49 @@ function createAgentRunner(options) {
     return `No pude confirmar la creacion de una sesion nueva en ${path.basename(
       executionCwd
     )}.\nHe vuelto a conectar la sesion anterior del proyecto y seguire trabajando ahi.`;
+  }
+
+  async function waitForPersistedCodexTurnCompletion({
+    threadId,
+    sinceTs,
+    chatId,
+    topicId,
+  }) {
+    if (!threadId || typeof getLocalCodexSessionTurnState !== 'function') {
+      return {
+        assistantMessage: '',
+        assistantTimestamp: '',
+        taskComplete: false,
+        taskCompleteTimestamp: '',
+      };
+    }
+
+    const startedAt = Date.now();
+    let latestState = {
+      assistantMessage: '',
+      assistantTimestamp: '',
+      taskComplete: false,
+      taskCompleteTimestamp: '',
+    };
+    while (Date.now() - startedAt < interactiveNewSessionTimeoutMs) {
+      try {
+        latestState = await getLocalCodexSessionTurnState(threadId, {
+          sinceTs,
+        });
+      } catch (err) {
+        console.warn('Failed to inspect local codex session turn state:', err);
+      }
+      if (latestState.taskComplete) {
+        console.info(
+          `Agent detected persisted task_complete chat=${chatId} topic=${
+            topicId || 'root'
+          } threadId=${threadId}`
+        );
+        return latestState;
+      }
+      await delay(100);
+    }
+    return latestState;
   }
 
   function finalizeInteractiveExecution({
@@ -613,7 +675,44 @@ function createAgentRunner(options) {
       threads,
     });
 
+    if (waitForInteractiveCompletion && !backgroundInteractiveCleanup) {
+      const turnState = await waitForPersistedCodexTurnCompletion({
+        threadId: candidateId,
+        sinceTs: startedAt,
+        chatId,
+        topicId,
+      });
+      if (turnState.taskComplete && !execFinished) {
+        console.info(
+          `pty_abort_requested chat=${chatId} topic=${
+            topicId || 'root'
+          } reason=turn_complete_detected threadId=${candidateId}`
+        );
+        abortController.abort(new Error('turn_complete_detected'));
+      }
+    }
+
     if (backgroundInteractiveCleanup) {
+      const trackedCleanupPromise = finalizeCleanup()
+        .then((result) => ({
+          finished: true,
+          parsedText: result.parsed?.text || '',
+          execError: result.execError || null,
+        }))
+        .catch((err) => {
+          console.warn('Interactive cleanup failed after session attach:', err);
+          return {
+            finished: false,
+            parsedText: '',
+            execError: err,
+          };
+        })
+        .finally(() => {
+          if (pendingCodexInitializations.get(threadKey) === trackedCleanupPromise) {
+            pendingCodexInitializations.delete(threadKey);
+          }
+        });
+      pendingCodexInitializations.set(threadKey, trackedCleanupPromise);
       return {
         text: buildSessionCreationReply({
           executionCwd,
@@ -623,20 +722,7 @@ function createAgentRunner(options) {
         }),
         threadId: candidateId,
         reusedExistingSession,
-        cleanupPromise: finalizeCleanup()
-          .then((result) => ({
-            finished: true,
-            parsedText: result.parsed?.text || '',
-            execError: result.execError || null,
-          }))
-          .catch((err) => {
-            console.warn('Interactive cleanup failed after session attach:', err);
-            return {
-              finished: false,
-              parsedText: '',
-              execError: err,
-            };
-          }),
+        cleanupPromise: trackedCleanupPromise,
       };
     }
 
@@ -855,6 +941,7 @@ function createAgentRunner(options) {
       scriptContext,
       documentPaths,
       onEvent,
+      thinkingOverride,
       waitForInteractiveCompletion = false,
       backgroundInteractiveCleanup = false,
     } = runOptions;
@@ -891,6 +978,7 @@ function createAgentRunner(options) {
     }
 
     if (threadId && agent.id === 'codex' && typeof getLocalCodexSessionMeta === 'function') {
+      await waitForPendingCodexInitialization(threadKey, { chatId, topicId });
       let sessionMeta = null;
       try {
         sessionMeta = await getLocalCodexSessionMeta(threadId);
@@ -939,7 +1027,7 @@ function createAgentRunner(options) {
       }
     }
 
-    const thinking = getGlobalThinking();
+    const thinking = String(thinkingOverride || '').trim() || getGlobalThinking();
     const finalPrompt = sharedCodexSession
       ? buildSharedSessionPrompt(
           promptWithContext,

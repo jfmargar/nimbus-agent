@@ -118,7 +118,10 @@ function killProcessGroup(child, signal) {
 
 function resolveAbortSignalSequence(reason) {
   const normalizedReason = String(reason || '').trim().toLowerCase();
-  if (normalizedReason.includes('grace_elapsed')) {
+  if (
+    normalizedReason.includes('grace_elapsed') ||
+    normalizedReason.includes('turn_complete_detected')
+  ) {
     return [
       { signal: 'SIGINT', delayMs: PTY_INTERRUPT_GRACE_MS },
       { signal: 'SIGTERM', delayMs: PTY_KILL_GRACE_MS },
