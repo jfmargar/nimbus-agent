@@ -129,6 +129,57 @@ test('runTurn resumes an existing sdk thread', async () => {
   assert.equal(result.threadId, 'thread-existing');
 });
 
+test('runTurn ignores stale pre-turn assistant output when resuming a thread', async () => {
+  const client = createCodexSdkClient({
+    loadCodexSdkModule: async () => ({
+      Codex: class Codex {
+        resumeThread(id) {
+          return {
+            id,
+            runStreamed: async () => ({
+              events: (async function* events() {
+                yield {
+                  type: 'item.completed',
+                  item: {
+                    id: 'msg-seed',
+                    type: 'agent_message',
+                    text: '.',
+                  },
+                };
+                yield { type: 'turn.started' };
+                yield {
+                  type: 'item.completed',
+                  item: {
+                    id: 'msg-current',
+                    type: 'agent_message',
+                    text: 'respuesta actual',
+                  },
+                };
+                yield {
+                  type: 'turn.completed',
+                  usage: {
+                    input_tokens: 1,
+                    cached_input_tokens: 0,
+                    output_tokens: 2,
+                  },
+                };
+              })(),
+            }),
+          };
+        }
+      },
+    }),
+  });
+
+  const result = await client.runTurn({
+    prompt: 'Sigue',
+    threadId: 'thread-existing',
+  });
+
+  assert.equal(result.text, 'respuesta actual');
+  assert.equal(result.threadId, 'thread-existing');
+});
+
 test('normalizeSdkError classifies common failure modes', () => {
   assert.equal(
     normalizeSdkError({ message: 'spawn codex ENOENT' }).errorKind,
