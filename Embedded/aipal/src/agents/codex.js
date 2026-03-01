@@ -6,6 +6,7 @@ const INTERACTIVE_BASE_ARGS = '--no-alt-screen -a never -s workspace-write';
 const MODEL_ARG = '--model';
 const REASONING_CONFIG_KEY = 'model_reasoning_effort';
 const ANSI_PATTERN = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+const INTERACTIVE_RESUME_ID_REGEX = /codex resume ([0-9a-f-]{16,})/i;
 
 function appendOptionalArg(args, flag, value) {
   if (!flag || !value) return args;
@@ -100,7 +101,10 @@ function stripAnsi(value) {
 }
 
 function parseInteractiveOutput(output) {
-  const cleaned = stripAnsi(output)
+  const stripped = stripAnsi(output).replace(/\r/g, '\n');
+  const resumeMatch = stripped.match(INTERACTIVE_RESUME_ID_REGEX);
+  const threadId = resumeMatch ? String(resumeMatch[1] || '').trim() : '';
+  const cleaned = stripped
     .replace(/\r/g, '\n')
     .split('\n')
     .map((line) => line.trim())
@@ -117,10 +121,11 @@ function parseInteractiveOutput(output) {
     .filter((line) => !/^TUI/i.test(line))
     .filter((line) => line.length >= 8);
 
-  if (cleaned.length === 0) return { text: '', sawText: false };
+  if (cleaned.length === 0) return { text: '', threadId, sawText: false };
   const lastMeaningful = cleaned[cleaned.length - 1];
   return {
     text: lastMeaningful,
+    threadId,
     sawText: Boolean(lastMeaningful),
   };
 }

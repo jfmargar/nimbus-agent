@@ -11,8 +11,6 @@ const MENU_PROJECT_PAGE_SIZE = 8;
 const MENU_SESSION_PAGE_SIZE = 6;
 const MENU_SEARCH_MAX_RESULTS = 200;
 const SESSION_NAME_MAX_CHARS = 120;
-const AUTO_SEND_CLEANUP_WAIT_MS = 800;
-
 const MENU_BTN_SEARCH = 'Buscar';
 const MENU_BTN_PREV = 'Anterior';
 const MENU_BTN_NEXT = 'Siguiente';
@@ -99,10 +97,6 @@ function parseSessionCreationInput(value) {
     sessionName: normalizeSessionName(firstLine),
     initialRequest: rest.join('\n').trim(),
   };
-}
-
-function waitMs(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function createMenuInstanceId() {
@@ -1627,33 +1621,11 @@ function registerSettingsCommands(options) {
             topicId,
             onEvent: feedback.onEvent,
             waitForInteractiveCompletion: true,
-            backgroundInteractiveCleanup: true,
           }
         );
         const sessionCreationNotice = String(sessionCreation?.text || '').trim();
         const reusedExistingSession = sessionCreation?.reusedExistingSession === true;
         if (initialRequest) {
-          const cleanupFinishedQuickly = sessionCreation?.cleanupPromise
-            ? await Promise.race([
-                sessionCreation.cleanupPromise.then(() => true),
-                waitMs(AUTO_SEND_CLEANUP_WAIT_MS).then(() => false),
-              ])
-            : true;
-          if (!cleanupFinishedQuickly) {
-            feedback.stopTyping();
-            if (feedback.progress) {
-              await feedback.progress.finish();
-            }
-            await ctx.reply(
-              `Sesión "${sessionName}" creada en ${projectNameFromCwd(
-                cwd
-              )}.\nLa he conectado al tópico, pero sigue cerrándose en Codex. Envía ahora tu primera solicitud.`,
-              {
-                reply_markup: buildMainMenuKeyboard(),
-              }
-            );
-            return;
-          }
           if (reusedExistingSession && sessionCreationNotice) {
             await ctx.reply(sessionCreationNotice, {
               reply_markup: buildMainMenuKeyboard(),

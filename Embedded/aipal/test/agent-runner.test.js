@@ -61,7 +61,12 @@ function createRunnerHarness(overrides = {}) {
     transport: 'sdk',
     buildCommand: () => 'codex exec resume thread-id',
     buildInteractiveNewSessionCommand: () => 'codex interactive new',
-    parseOutput: () => ({ text: 'respuesta resume', threadId: 'thread-id', sawJson: true }),
+    parseOutput: (output) => {
+      if (typeof overrides.parseOutput === 'function') {
+        return overrides.parseOutput(output);
+      }
+      return { text: 'respuesta resume', threadId: 'thread-id', sawJson: true };
+    },
     parseInteractiveOutput: (output) => {
       if (typeof overrides.parseInteractiveOutput === 'function') {
         return overrides.parseInteractiveOutput(output);
@@ -314,6 +319,24 @@ test('runAgentForChat can wait for interactive completion when requested', async
   assert.equal(harness.getLastExecWithPtyOptions().signal.aborted, false);
 });
 
+test('runAgentForChat does not abort interactive completion when the seed turn takes longer than the early-abort grace', async () => {
+  const harness = createRunnerHarness({
+    execLocalWithPty: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1700));
+      return 'Sesion lista.';
+    },
+    parseInteractiveOutput: () => ({ text: 'Sesion lista.', sawText: true }),
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Nombrar sesion', {
+    waitForInteractiveCompletion: true,
+  });
+
+  assert.equal(text, 'Sesion lista.');
+  assert.equal(harness.threads.get('chat:root:codex'), 'thread-cli');
+  assert.equal(harness.getLastExecWithPtyOptions().signal.aborted, false);
+});
+
 test('runAgentTurnForChat can attach a visible session before interactive cleanup finishes', async () => {
   const harness = createRunnerHarness({
     execLocalWithPty: async (_command, options) =>
@@ -435,20 +458,45 @@ test('runAgentTurnForChat warns when it must reattach a previous codex session',
   assert.equal(harness.threads.get('chat:root:codex'), 'thread-existing');
 });
 
-test('runAgentForChat aborts interactive creation after grace period when completion hangs', async () => {
+test('runAgentTurnForChat uses interactive output thread id when session diff misses the new codex session', async () => {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aipal-agent-runner-project-'));
   const harness = createRunnerHarness({
-    execLocalWithPty: async (_command, options) =>
-      new Promise((_, reject) => {
-        options.signal.addEventListener(
-          'abort',
-          () => {
-            const err = new Error('aborted');
-            err.name = 'AbortError';
-            reject(err);
-          },
-          { once: true }
-        );
-      }),
+    projectDir,
+    findNewestSessionDiff: async () => [],
+    listLocalCodexSessions: async () => [],
+    listLocalCodexSessionsSince: async () => [],
+    execLocalWithPty: async () => `
+Token usage: total=7215 input=7146 output=69
+To continue this session, run codex resume 019ca828-c4e9-7cc1-9be5-0a5f110110ce
+`,
+    parseInteractiveOutput: (output) => ({
+      text: '',
+      sawText: false,
+      threadId: output.includes('codex resume')
+        ? '019ca828-c4e9-7cc1-9be5-0a5f110110ce'
+        : '',
+    }),
+  });
+
+  const result = await harness.runner.runAgentTurnForChat(1, 'Nombrar sesion', {
+    waitForInteractiveCompletion: true,
+    backgroundInteractiveCleanup: true,
+  });
+
+  assert.equal(result.threadId, '019ca828-c4e9-7cc1-9be5-0a5f110110ce');
+  assert.equal(result.reusedExistingSession, false);
+  assert.equal(harness.threads.get('chat:root:codex'), '019ca828-c4e9-7cc1-9be5-0a5f110110ce');
+});
+
+test('runAgentForChat waits for the interactive timeout instead of aborting when completion is explicitly requested', async () => {
+  const harness = createRunnerHarness({
+    execLocalWithPty: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const err = new Error('Command timed out after 1000ms');
+      err.code = 'ETIMEDOUT';
+      err.stdout = 'Tip: Use /help for commands';
+      throw err;
+    },
     parseInteractiveOutput: () => ({ text: '', sawText: false }),
   });
 
@@ -465,7 +513,7 @@ test('runAgentForChat aborts interactive creation after grace period when comple
     )}.\nA partir del proximo mensaje continuare esa sesion.`
   );
   assert.equal(harness.threads.get('chat:root:codex'), 'thread-cli');
-  assert.equal(harness.getLastExecWithPtyOptions().signal.aborted, true);
+  assert.equal(harness.getLastExecWithPtyOptions().signal.aborted, false);
   assert.ok(elapsedMs < 10000);
 });
 

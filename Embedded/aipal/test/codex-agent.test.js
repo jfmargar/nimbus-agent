@@ -66,3 +66,12 @@ For more information, try '--help'.
   assert.equal(parsed.text, '');
   assert.equal(parsed.sawText, false);
 });
+
+test('parseInteractiveOutput extracts thread id from resume hint', () => {
+  const parsed = codexAgent.parseInteractiveOutput(`
+Token usage: total=7215 input=7146 output=69
+To continue this session, run codex resume 019ca828-c4e9-7cc1-9be5-0a5f110110ce
+  `);
+
+  assert.equal(parsed.threadId, '019ca828-c4e9-7cc1-9be5-0a5f110110ce');
+});

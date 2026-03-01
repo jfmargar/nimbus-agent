@@ -1,6 +1,89 @@
 const { execFile, spawn } = require('child_process');
 
-const PTY_PYTHON_SNIPPET = 'import pty,sys; pty.spawn(["bash","-lc", sys.argv[1]])';
+const PTY_PYTHON_SNIPPET = `
+import errno
+import os
+import pty
+import select
+import signal
+import sys
+
+COMMAND = sys.argv[1]
+TERM_RESPONSES = [
+    (b"\\x1b[6n", b"\\x1b[1;1R"),
+    (b"\\x1b[c", b"\\x1b[?1;2c"),
+    (b"\\x1b]10;?", b"\\x1b]10;rgb:ffff/ffff/ffff\\x1b\\\\"),
+    (b"\\x1b]11;?", b"\\x1b]11;rgb:0000/0000/0000\\x1b\\\\"),
+]
+RESPONDED = set()
+CHILD_PID = None
+
+
+def forward_and_exit(sig, _frame):
+    global CHILD_PID
+    if CHILD_PID:
+        try:
+            os.kill(CHILD_PID, sig)
+        except ProcessLookupError:
+            pass
+    signal.signal(sig, signal.SIG_DFL)
+    os.kill(os.getpid(), sig)
+
+
+for forwarded_signal in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    signal.signal(forwarded_signal, forward_and_exit)
+
+
+pid, master_fd = pty.fork()
+if pid == 0:
+    os.execvp("bash", ["bash", "-lc", COMMAND])
+
+CHILD_PID = pid
+recent_output = bytearray()
+
+while True:
+    try:
+        readable, _, _ = select.select([master_fd], [], [], 0.1)
+    except InterruptedError:
+        continue
+
+    if master_fd in readable:
+        try:
+            chunk = os.read(master_fd, 4096)
+        except OSError as exc:
+            if exc.errno == errno.EIO:
+                chunk = b""
+            else:
+                raise
+        if not chunk:
+            break
+        os.write(sys.stdout.fileno(), chunk)
+        recent_output.extend(chunk)
+        if len(recent_output) > 8192:
+            del recent_output[:-8192]
+        snapshot = bytes(recent_output)
+        for pattern, response in TERM_RESPONSES:
+            if pattern in snapshot and pattern not in RESPONDED:
+                try:
+                    os.write(master_fd, response)
+                except OSError:
+                    pass
+                RESPONDED.add(pattern)
+
+    try:
+        done_pid, status = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        done_pid, status = pid, 0
+
+    if done_pid == pid:
+        if os.WIFEXITED(status):
+            sys.exit(os.WEXITSTATUS(status))
+        if os.WIFSIGNALED(status):
+            sig = os.WTERMSIG(status)
+            signal.signal(sig, signal.SIG_DFL)
+            os.kill(os.getpid(), sig)
+        sys.exit(1)
+`;
 const PTY_INTERRUPT_GRACE_MS = 400;
 const PTY_KILL_GRACE_MS = 1000;
 

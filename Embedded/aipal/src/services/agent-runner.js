@@ -23,6 +23,11 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isVisibleCodexSessionSource(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'cli' || normalized === 'exec';
+}
+
 function normalizeDateInput(value) {
   if (!value) return 0;
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -72,7 +77,6 @@ function createAgentRunner(options) {
     wrapCommandWithPty,
   } = options;
   const interactiveNewSessionTimeoutMs = Math.min(agentTimeoutMs, 45000);
-  const interactiveCompletionGraceMs = 1500;
   const interactiveEarlyAbortGraceMs = 600;
   const cliSessionResolveAttempts = 16;
   const cliSessionResolveIntervalMs = 250;
@@ -221,8 +225,8 @@ function createAgentRunner(options) {
         sinceTs: startedAt,
         limit: 20,
       });
-      const cliCandidate = diffCandidates.find(
-        (session) => String(session?.source || '').trim().toLowerCase() === 'cli'
+      const cliCandidate = diffCandidates.find((session) =>
+        isVisibleCodexSessionSource(session?.source)
       );
       if (cliCandidate) {
         return { session: cliCandidate, detectionSource: 'jsonl' };
@@ -244,8 +248,8 @@ function createAgentRunner(options) {
       const candidates = sessions.filter(
         (session) => !previousIds.includes(String(session?.id || '').trim())
       );
-      const cliCandidate = candidates.find(
-        (session) => String(session?.source || '').trim().toLowerCase() === 'cli'
+      const cliCandidate = candidates.find((session) =>
+        isVisibleCodexSessionSource(session?.source)
       );
       if (cliCandidate) {
         return { session: cliCandidate, detectionSource: 'jsonl' };
@@ -325,7 +329,7 @@ function createAgentRunner(options) {
     console.info(fragments.join(' '));
   }
 
-  function isUsefulInteractiveReply(text) {
+  function isUsefulSessionCreationReply(text) {
     const normalized = String(text || '').replace(/\s+/g, ' ').trim();
     if (!normalized) return false;
     if (normalized.length < 8) return false;
@@ -338,7 +342,7 @@ function createAgentRunner(options) {
     return true;
   }
 
-  function buildInteractiveCreationReply({ executionCwd, parsedText, execError, candidateId }) {
+  function buildSessionCreationReply({ executionCwd, parsedText, execError, candidateId }) {
     const normalizedText = String(parsedText || '').trim();
     if (!candidateId) return '';
     if (execError?.code === 'ETIMEDOUT') {
@@ -346,7 +350,7 @@ function createAgentRunner(options) {
         executionCwd
       )}.\nA partir del proximo mensaje continuare esa sesion.`;
     }
-    if (isUsefulInteractiveReply(normalizedText)) {
+    if (isUsefulSessionCreationReply(normalizedText)) {
       return normalizedText;
     }
     return `Sesion creada y conectada en ${path.basename(
@@ -364,11 +368,16 @@ function createAgentRunner(options) {
     execPromise,
     abortController,
     getExecFinished,
+    waitForCompletion,
     graceMs,
     chatId,
     topicId,
   }) {
     return (async () => {
+      if (waitForCompletion) {
+        await execPromise;
+        return;
+      }
       await Promise.race([execPromise, delay(graceMs)]);
       if (!getExecFinished()) {
         console.info(
@@ -448,14 +457,12 @@ function createAgentRunner(options) {
         }
       });
 
-    const graceMs = waitForInteractiveCompletion
-      ? interactiveCompletionGraceMs
-      : interactiveEarlyAbortGraceMs;
     const cleanupPromise = finalizeInteractiveExecution({
       execPromise,
       abortController,
       getExecFinished: () => execFinished,
-      graceMs,
+      waitForCompletion: waitForInteractiveCompletion && !backgroundInteractiveCleanup,
+      graceMs: interactiveEarlyAbortGraceMs,
       chatId,
       topicId,
     });
@@ -515,6 +522,28 @@ function createAgentRunner(options) {
 
     if (!candidateId) {
       const cleanupResult = await finalizeCleanup();
+      const parsedInteractiveThreadId = String(cleanupResult.parsed?.threadId || '').trim();
+      if (parsedInteractiveThreadId) {
+        await syncThreadAndProject({
+          chatId,
+          topicId,
+          effectiveAgentId,
+          threadKey,
+          threadId: parsedInteractiveThreadId,
+          executionCwd,
+          threads,
+        });
+        return {
+          text: buildSessionCreationReply({
+            executionCwd,
+            parsedText: cleanupResult.parsed?.text,
+            execError: cleanupResult.execError,
+            candidateId: parsedInteractiveThreadId,
+          }),
+          threadId: parsedInteractiveThreadId,
+          reusedExistingSession: false,
+        };
+      }
       const fallbackLatest = await resolveLatestCodexSessionId(executionCwd, {
         excludeIds: snapshot.previousIds,
         sinceTs: snapshot.startedAt,
@@ -530,7 +559,7 @@ function createAgentRunner(options) {
           threads,
         });
         return {
-          text: buildInteractiveCreationReply({
+          text: buildSessionCreationReply({
             executionCwd,
             parsedText: cleanupResult.parsed?.text,
             execError: cleanupResult.execError,
@@ -586,7 +615,7 @@ function createAgentRunner(options) {
 
     if (backgroundInteractiveCleanup) {
       return {
-        text: buildInteractiveCreationReply({
+        text: buildSessionCreationReply({
           executionCwd,
           parsedText: '',
           execError: null,
@@ -620,7 +649,7 @@ function createAgentRunner(options) {
       );
     }
     return {
-      text: buildInteractiveCreationReply({
+      text: buildSessionCreationReply({
         executionCwd,
         parsedText: cleanupResult.parsed?.text,
         execError: cleanupResult.execError,
