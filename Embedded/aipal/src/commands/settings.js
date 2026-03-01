@@ -18,7 +18,7 @@ const MENU_BTN_NEW_SESSION = 'Nueva sesión';
 const MENU_BTN_CREATE_PROJECT_SESSION = 'Crear nueva sesión';
 const MENU_BTN_LAST_PROJECT_SESSION = 'Continuar última sesión';
 const MENU_EXPIRED_MESSAGE = 'Este menú expiró o fue reemplazado. Usa /menu.';
-const CODEX_SESSION_SEED_PROMPT = 'Responde exactamente con: .';
+const CODEX_SESSION_SEED_PROMPT = 'Nimbus nueva sesión';
 const menuNavCache = new Map();
 const RESERVED_MENU_LABELS = new Set([
   'projects',
