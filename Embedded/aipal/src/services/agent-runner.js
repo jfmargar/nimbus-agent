@@ -75,6 +75,7 @@ function createAgentRunner(options) {
     defaultTimeZone,
     getDefaultAgentCwd,
     listLocalCodexSessions,
+    runGeminiAcpTurn,
     wrapCommandWithPty,
   } = options;
   const interactiveNewSessionTimeoutMs = Math.min(agentTimeoutMs, 45000);
@@ -1083,6 +1084,28 @@ function createAgentRunner(options) {
         threads,
         threadId,
         onEvent,
+      });
+      return {
+        text: result.text,
+      };
+    }
+
+    if (agent.id === 'gemini' && typeof runGeminiAcpTurn === 'function') {
+      const result = await runGeminiAcpTurn({
+        cwd: executionCwd,
+        prompt: finalPrompt,
+        threadId,
+        model,
+        onApprovalRequest: runOptions.onApprovalRequest,
+      });
+      await syncThreadAndProject({
+        chatId,
+        topicId,
+        effectiveAgentId,
+        threadKey,
+        threadId: result.threadId,
+        executionCwd,
+        threads,
       });
       return {
         text: result.text,

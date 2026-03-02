@@ -16,6 +16,7 @@ function registerTextHandler(options) {
     replyWithError,
     replyWithResponse,
     renderProgressEvent,
+    requestAgentApproval,
     resolveEffectiveAgentId,
     runAgentForChat,
     runScriptCommand,
@@ -120,6 +121,8 @@ function registerTextHandler(options) {
               topicId,
               scriptContext,
               onEvent: feedback.onEvent,
+              onApprovalRequest: (request) =>
+                requestAgentApproval(ctx, request),
             });
             await captureMemoryEvent({
               threadKey: memoryThreadKey,
@@ -184,6 +187,7 @@ function registerTextHandler(options) {
           topicId,
           scriptContext,
           onEvent: feedback.onEvent,
+          onApprovalRequest: (request) => requestAgentApproval(ctx, request),
         });
         await captureMemoryEvent({
           threadKey: memoryThreadKey,

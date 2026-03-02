@@ -121,6 +121,7 @@ const {
   shellQuote,
   wrapCommandWithPty,
 } = require('./services/process');
+const { createGeminiAcpRunner } = require('./services/gemini-acp');
 const { createEnqueue } = require('./services/queue');
 const { createAgentRunner } = require('./services/agent-runner');
 const {
@@ -138,6 +139,9 @@ const { createFileService } = require('./services/files');
 const { createMemoryService } = require('./services/memory');
 const { createScriptService } = require('./services/scripts');
 const { createTelegramReplyService } = require('./services/telegram-reply');
+const {
+  createTelegramApprovalService,
+} = require('./services/telegram-approval');
 const { bootstrapApp } = require('./app/bootstrap');
 const { initializeApp, installShutdownHooks } = require('./app/lifecycle');
 const { registerCommands } = require('./app/register-commands');
@@ -258,6 +262,9 @@ const memoryService = createMemoryService({
   },
 });
 const { buildBootstrapContext, captureMemoryEvent, extractMemoryText } = memoryService;
+const geminiAcpRunner = createGeminiAcpRunner({
+  timeoutMs: AGENT_TIMEOUT_MS,
+});
 
 const agentRunner = createAgentRunner({
   agentMaxBuffer: AGENT_MAX_BUFFER,
@@ -283,6 +290,7 @@ const agentRunner = createAgentRunner({
   getLocalCodexSessionMeta,
   getLocalCodexSessionTurnState,
   listLocalCodexSessions,
+  runGeminiAcpTurn: (options) => geminiAcpRunner.runTurn(options),
   listLocalCodexSessionsSince,
   listSqliteCodexThreads,
   imageDir: IMAGE_DIR,
@@ -322,6 +330,8 @@ const {
   sendResponseToChat,
   startTyping,
 } = telegramReplyService;
+const telegramApprovalService = createTelegramApprovalService({ bot });
+telegramApprovalService.registerHandlers();
 
 const handleCronTrigger = createCronHandler({
   bot,
@@ -574,6 +584,8 @@ registerHandlers({
   codexProgressUpdatesEnabled: CODEX_PROGRESS_UPDATES,
   beginProgress,
   renderProgressEvent,
+  requestAgentApproval: (ctx, request) =>
+    telegramApprovalService.requestApproval(ctx, request),
   startTyping,
   transcribeAudio,
 });
