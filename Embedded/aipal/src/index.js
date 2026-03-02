@@ -457,11 +457,15 @@ function setThreadForAgent(chatId, topicId, agentId, threadId) {
 }
 
 bot.start(async (ctx) => {
+  const replyOptions =
+    LOCKED_AGENT === 'gemini'
+      ? undefined
+      : {
+          reply_markup: buildMainMenuKeyboard(),
+        };
   await ctx.reply(
     `Ready. Send a message and I will pass it to ${getAgentLabel(globalAgent)}.`,
-    {
-      reply_markup: buildMainMenuKeyboard(),
-    }
+    replyOptions
   );
 });
 registerCommands({

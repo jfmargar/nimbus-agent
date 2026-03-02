@@ -410,6 +410,17 @@ function registerSettingsCommands(options) {
     return getAgentOverride(chatId, topicId) || getGlobalAgent();
   }
 
+  function shouldShowMainMenuKeyboard() {
+    return lockedAgentId !== 'gemini';
+  }
+
+  function buildMainMenuReplyOptions() {
+    if (!shouldShowMainMenuKeyboard()) return {};
+    return {
+      reply_markup: buildMainMenuKeyboard(),
+    };
+  }
+
   async function resolveProjectForContext(chatId, topicId, agentId) {
     if (typeof resolveAgentProjectCwd !== 'function') return '';
     return String(await resolveAgentProjectCwd(chatId, topicId, agentId)).trim();
@@ -490,9 +501,7 @@ function registerSettingsCommands(options) {
     if (chatId) {
       setMainMenuState(chatId, topicId);
     }
-    await ctx.reply('Menú principal:', {
-      reply_markup: buildMainMenuKeyboard(),
-    });
+    await ctx.reply('Menú principal:', buildMainMenuReplyOptions());
   }
 
   async function openProjectsMenu(ctx, options = {}) {
@@ -699,9 +708,10 @@ function registerSettingsCommands(options) {
       console.warn('Failed to persist threads after resuming last session:', err)
     );
     setMainMenuState(chatId, topicId);
-    await ctx.reply(`Sesión reanudada: ${sessionId}`, {
-      reply_markup: buildMainMenuKeyboard(),
-    });
+    await ctx.reply(
+      `Sesión reanudada: ${sessionId}`,
+      buildMainMenuReplyOptions()
+    );
   }
 
   async function openSessionsMenu(ctx, options = {}) {
@@ -816,9 +826,7 @@ function registerSettingsCommands(options) {
     const lines = [`Sesión conectada: ${selected.id}`];
     if (cwd) lines.push(`Proyecto activo: ${projectNameFromCwd(cwd)}`);
     if (preview) lines.push(`Último mensaje: ${preview.slice(0, 240)}`);
-    await ctx.reply(lines.join('\n'), {
-      reply_markup: buildMainMenuKeyboard(),
-    });
+    await ctx.reply(lines.join('\n'), buildMainMenuReplyOptions());
   }
 
   async function createNewSessionFromState(ctx, state) {
@@ -873,9 +881,7 @@ function registerSettingsCommands(options) {
         : `Sesion creada y conectada en ${projectNameFromCwd(
             cwd
           )}.\nEscribe tu primera solicitud.`;
-      await ctx.reply(replyText, {
-        reply_markup: buildMainMenuKeyboard(),
-      });
+      await ctx.reply(replyText, buildMainMenuReplyOptions());
     } catch (err) {
       console.error(err);
       feedback.stopTyping();
