@@ -5,6 +5,16 @@ const GEMINI_OUTPUT_FORMAT = 'json';
 const SESSION_ID_REGEX = /\[([0-9a-f-]{16,})\]/i;
 const CAPACITY_MESSAGE_REGEX = /"message"\s*:\s*"([^"]+)"|No capacity available for model ([^\s"]+)/i;
 
+function getApprovalMode() {
+  const normalized = String(process.env.AIPAL_GEMINI_APPROVAL_MODE || '')
+    .trim()
+    .toLowerCase();
+  if (['default', 'auto_edit', 'yolo', 'plan'].includes(normalized)) {
+    return normalized;
+  }
+  return 'default';
+}
+
 function safeJsonParse(value) {
   try {
     return JSON.parse(value);
@@ -57,13 +67,14 @@ function normalizeErrorText(value) {
 
 function buildCommand({ prompt, promptExpression, threadId, model }) {
   const promptValue = resolvePromptValue(prompt, promptExpression);
+  const approvalMode = getApprovalMode();
   const args = [
     '-p',
     promptValue,
     '--output-format',
     GEMINI_OUTPUT_FORMAT,
     '--approval-mode',
-    'default',
+    approvalMode,
   ];
   if (model) {
     args.push('--model', shellQuote(model));
@@ -110,6 +121,7 @@ module.exports = {
   needsPty: true,
   mergeStderr: false,
   buildCommand,
+  getApprovalMode,
   parseOutput,
   listSessionsCommand,
   parseSessionList,

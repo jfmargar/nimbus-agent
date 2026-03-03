@@ -3,9 +3,13 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs/promises');
 
-const XDG_CONFIG_HOME = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
-const CONFIG_PATH = path.join(XDG_CONFIG_HOME, 'aipal', 'config.json');
-const CONFIG_DIR = path.dirname(CONFIG_PATH);
+const XDG_CONFIG_HOME =
+  process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+const STATE_HOME = process.env.AIPAL_STATE_HOME
+  ? path.resolve(process.env.AIPAL_STATE_HOME)
+  : path.join(XDG_CONFIG_HOME, 'aipal');
+const CONFIG_DIR = STATE_HOME;
+const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 const MEMORY_PATH = path.join(CONFIG_DIR, 'memory.md');
 const SOUL_PATH = path.join(CONFIG_DIR, 'soul.md');
 const TOOLS_PATH = path.join(CONFIG_DIR, 'tools.md');
@@ -144,6 +148,7 @@ async function saveProjectOverrides(overrides) {
 module.exports = {
   CONFIG_DIR,
   CONFIG_PATH,
+  STATE_HOME,
   MEMORY_PATH,
   SOUL_PATH,
   TOOLS_PATH,

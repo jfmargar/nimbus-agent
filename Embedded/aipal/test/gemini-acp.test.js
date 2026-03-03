@@ -25,6 +25,7 @@ function createChildProcess() {
 }
 
 test('gemini ACP runner handles approval requests and returns session output', async () => {
+  delete process.env.AIPAL_GEMINI_APPROVAL_MODE;
   const child = createChildProcess();
   const spawned = [];
   let approvalRequest = null;
@@ -99,4 +100,43 @@ test('gemini ACP runner handles approval requests and returns session output', a
     text: 'Primera parte. Segunda parte.',
     threadId: 'session-1',
   });
+});
+
+test('gemini ACP runner honors AIPAL_GEMINI_APPROVAL_MODE=yolo', async () => {
+  process.env.AIPAL_GEMINI_APPROVAL_MODE = 'yolo';
+  const child = createChildProcess();
+  const spawned = [];
+
+  const runner = createGeminiAcpRunner({
+    timeoutMs: 5000,
+    spawnImpl: (cmd, args) => {
+      spawned.push({ cmd, args });
+      return child;
+    },
+    loadSdk: () => ({
+      PROTOCOL_VERSION: '1',
+      ndJsonStream: () => ({}),
+      ClientSideConnection: class {
+        constructor() {}
+        async initialize() {}
+        async newSession() {
+          return { sessionId: 'session-1' };
+        }
+        async prompt() {
+          return { stopReason: 'end_turn' };
+        }
+      },
+    }),
+  });
+
+  await runner.runTurn({
+    cwd: process.cwd(),
+    prompt: 'hola',
+  });
+
+  assert.deepEqual(spawned[0], {
+    cmd: 'gemini',
+    args: ['--experimental-acp', '--approval-mode', 'yolo'],
+  });
+  delete process.env.AIPAL_GEMINI_APPROVAL_MODE;
 });

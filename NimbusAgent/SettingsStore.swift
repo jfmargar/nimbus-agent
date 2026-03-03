@@ -199,6 +199,21 @@ final class SettingsStore {
 }
 
 struct EnvAssembler {
+    private static let geminiShellVariables = [
+        "PATH",
+        "HOME",
+        "SSH_AUTH_SOCK",
+        "SSH_AGENT_PID",
+        "GIT_ASKPASS",
+        "GITLAB_TOKEN",
+        "GLAB_CONFIG_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+        "LANG",
+        "LC_ALL"
+    ]
+
     static func effectiveCodexHome(from environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
         if let value = environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
             return value
@@ -215,15 +230,31 @@ struct EnvAssembler {
             .appendingPathComponent(bot.configHomeComponent, isDirectory: true)
     }
 
+    static func aipalStateHome(for bot: NimbusBot) -> URL {
+        configHome(for: bot).appendingPathComponent("aipal", isDirectory: true)
+    }
+
     static func build(settings: NimbusSettings, token: String, bot: NimbusBot) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
+        if bot == .gemini {
+            env.merge(ShellResolver.interactiveShellEnvironment(variableNames: geminiShellVariables)) { _, new in new }
+        } else {
+            env["PATH"] = ShellResolver.mergedPathValue()
+        }
 
-        env["PATH"] = ShellResolver.mergedPathValue()
+        if env["PATH"]?.isEmpty ?? true {
+            env["PATH"] = ShellResolver.mergedPathValue()
+        }
         if env["HOME"]?.isEmpty ?? true {
             env["HOME"] = NSHomeDirectory()
         }
         env["CODEX_HOME"] = effectiveCodexHome(from: env)
-        env["XDG_CONFIG_HOME"] = configHome(for: bot).path
+        if bot == .codex {
+            env["XDG_CONFIG_HOME"] = configHome(for: bot).path
+        } else {
+            env["AIPAL_STATE_HOME"] = aipalStateHome(for: bot).path
+            env["AIPAL_GEMINI_APPROVAL_MODE"] = "yolo"
+        }
         env["TELEGRAM_BOT_TOKEN"] = token
         env["ALLOWED_USERS"] = settings.allowedUsers.trimmingCharacters(in: .whitespacesAndNewlines)
         env["AIPAL_DROP_PENDING_UPDATES"] = settings.dropPendingUpdates ? "true" : "false"

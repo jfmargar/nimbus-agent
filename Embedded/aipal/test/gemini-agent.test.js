@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const geminiAgent = require('../src/agents/gemini');
 
 test('buildCommand uses default approval mode and forwards model and resume id', () => {
+  delete process.env.AIPAL_GEMINI_APPROVAL_MODE;
   const command = geminiAgent.buildCommand({
     prompt: 'hola',
     threadId: 'session-123',
@@ -15,6 +16,16 @@ test('buildCommand uses default approval mode and forwards model and resume id',
   assert.doesNotMatch(command, /--yolo/);
   assert.match(command, /--model 'gemini-2\.5-pro'/);
   assert.match(command, /--resume 'session-123'/);
+});
+
+test('buildCommand honors AIPAL_GEMINI_APPROVAL_MODE=yolo', () => {
+  process.env.AIPAL_GEMINI_APPROVAL_MODE = 'yolo';
+  const command = geminiAgent.buildCommand({
+    prompt: 'hola',
+  });
+
+  assert.match(command, /--approval-mode yolo/);
+  delete process.env.AIPAL_GEMINI_APPROVAL_MODE;
 });
 
 test('parseOutput extracts JSON response from noisy PTY output', () => {

@@ -59,6 +59,16 @@ function createTimeoutError(timeoutMs) {
   return err;
 }
 
+function getApprovalMode() {
+  const normalized = String(process.env.AIPAL_GEMINI_APPROVAL_MODE || '')
+    .trim()
+    .toLowerCase();
+  if (['default', 'auto_edit', 'yolo', 'plan'].includes(normalized)) {
+    return normalized;
+  }
+  return 'default';
+}
+
 function createAbortError(reason) {
   const detail = String(reason?.message || reason || 'abort');
   const err = new Error(`Gemini cancelado: ${detail}`);
@@ -97,7 +107,7 @@ function createGeminiAcpRunner(options = {}) {
       signal,
     } = runOptions;
     const sdk = loadSdk();
-    const args = ['--experimental-acp', '--approval-mode', 'default'];
+    const args = ['--experimental-acp', '--approval-mode', getApprovalMode()];
     if (model) {
       args.push('--model', String(model));
     }
@@ -271,5 +281,6 @@ function createGeminiAcpRunner(options = {}) {
 
 module.exports = {
   createGeminiAcpRunner,
+  getApprovalMode,
   normalizeErrorText,
 };
