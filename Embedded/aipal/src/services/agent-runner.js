@@ -173,6 +173,18 @@ function createAgentRunner(options) {
     return { ...base, cwd };
   }
 
+  function resolveShellExecution(agent, command) {
+    const shellExecutable = String(agent?.shellExecutable || '').trim() || 'bash';
+    const shellArguments =
+      Array.isArray(agent?.shellArguments) && agent.shellArguments.length
+        ? [...agent.shellArguments]
+        : ['-lc'];
+    return {
+      shellExecutable,
+      shellArguments: [...shellArguments, command],
+    };
+  }
+
   function isSharedCodexSession(agent) {
     return String(agent?.id || '').trim().toLowerCase() === 'codex';
   }
@@ -924,7 +936,11 @@ function createAgentRunner(options) {
     let output;
     let execError;
     try {
-      output = await execLocal('bash', ['-lc', commandToRun], {
+      const { shellExecutable, shellArguments } = resolveShellExecution(
+        agent,
+        commandToRun
+      );
+      output = await execLocal(shellExecutable, shellArguments, {
         ...buildExecOptions(),
         timeout: agentTimeoutMs,
         maxBuffer: agentMaxBuffer,
@@ -1176,7 +1192,11 @@ function createAgentRunner(options) {
     let output;
     let execError;
     try {
-      output = await execLocal('bash', ['-lc', commandToRun], {
+      const { shellExecutable, shellArguments } = resolveShellExecution(
+        agent,
+        commandToRun
+      );
+      output = await execLocal(shellExecutable, shellArguments, {
         ...buildExecOptions({}, executionCwd),
         timeout: agentTimeoutMs,
         maxBuffer: agentMaxBuffer,
@@ -1216,7 +1236,11 @@ function createAgentRunner(options) {
         if (agent.mergeStderr) {
           listCommandToRun = `${listCommandToRun} 2>&1`;
         }
-        const listOutput = await execLocal('bash', ['-lc', listCommandToRun], {
+        const { shellExecutable, shellArguments } = resolveShellExecution(
+          agent,
+          listCommandToRun
+        );
+        const listOutput = await execLocal(shellExecutable, shellArguments, {
           ...buildExecOptions(),
           timeout: agentTimeoutMs,
           maxBuffer: agentMaxBuffer,

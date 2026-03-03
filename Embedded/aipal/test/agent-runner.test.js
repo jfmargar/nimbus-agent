@@ -50,6 +50,7 @@ function createRunnerHarness(overrides = {}) {
   let execCalls = 0;
   let execWithPtyCalls = 0;
   let lastExecWithPtyOptions = null;
+  let lastExecLocalArgs = null;
   let bootstrapCalls = 0;
   let retrievalCalls = 0;
   let geminiPromptCalls = 0;
@@ -139,10 +140,11 @@ function createRunnerHarness(overrides = {}) {
       },
     }),
     documentDir: '/tmp',
-    execLocal: async () => {
+    execLocal: async (...args) => {
       execCalls += 1;
+      lastExecLocalArgs = args;
       if (typeof overrides.execLocal === 'function') {
-        return overrides.execLocal();
+        return overrides.execLocal(...args);
       }
       return '{"type":"thread.started","thread_id":"thread-id"}';
     },
@@ -250,6 +252,7 @@ function createRunnerHarness(overrides = {}) {
     getExecWithPtyCalls: () => execWithPtyCalls,
     getGeminiPromptCalls: () => geminiPromptCalls,
     getLastBuildGeminiPromptArgs: () => lastBuildGeminiPromptArgs,
+    getLastExecLocalArgs: () => lastExecLocalArgs,
     getLastBuildPromptArgs: () => lastBuildPromptArgs,
     getLastBuildSharedPromptArgs: () => lastBuildSharedPromptArgs,
     getLastExecWithPtyOptions: () => lastExecWithPtyOptions,
@@ -799,6 +802,58 @@ test('runAgentForChat keeps enriched prompt path for non-codex agents', async ()
   const text = await runner.runAgentForChat(1, 'Hola');
 
   assert.equal(text, 'salida final');
+});
+
+test('runAgentForChat uses zsh login shell for opencode turns', async () => {
+  const harness = createRunnerHarness({
+    agent: {
+      id: 'opencode',
+      label: 'opencode',
+      mergeStderr: false,
+      shellExecutable: '/bin/zsh',
+      shellArguments: ['-ilc'],
+      buildCommand: ({ prompt }) => `opencode ${JSON.stringify(prompt)}`,
+      parseOutput: () => ({ text: 'salida final', threadId: '', sawJson: true }),
+    },
+    resolveEffectiveAgentId: () => 'opencode',
+    resolveThreadId: () => ({
+      threadKey: 'chat:root:opencode',
+      threadId: '',
+      migrated: false,
+    }),
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Hola');
+
+  assert.equal(text, 'salida final');
+  assert.equal(harness.getExecCalls(), 1);
+  assert.deepEqual(harness.getLastExecLocalArgs()?.[0], '/bin/zsh');
+  assert.deepEqual(harness.getLastExecLocalArgs()?.[1]?.[0], '-ilc');
+});
+
+test('runAgentForChat keeps bash shell for generic non-opencode agents', async () => {
+  const harness = createRunnerHarness({
+    agent: {
+      id: 'claude',
+      label: 'claude',
+      mergeStderr: false,
+      buildCommand: ({ prompt }) => `claude ${JSON.stringify(prompt)}`,
+      parseOutput: () => ({ text: 'salida final', threadId: '', sawJson: true }),
+    },
+    resolveEffectiveAgentId: () => 'claude',
+    resolveThreadId: () => ({
+      threadKey: 'chat:root:claude',
+      threadId: '',
+      migrated: false,
+    }),
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Hola');
+
+  assert.equal(text, 'salida final');
+  assert.equal(harness.getExecCalls(), 1);
+  assert.deepEqual(harness.getLastExecLocalArgs()?.[0], 'bash');
+  assert.deepEqual(harness.getLastExecLocalArgs()?.[1]?.[0], '-lc');
 });
 
 test('runAgentForChat does not inject retrieved memory into resumed Gemini sessions', async () => {
