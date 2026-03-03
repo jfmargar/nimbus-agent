@@ -1013,7 +1013,9 @@ function createAgentRunner(options) {
         ? `${bootstrap}\n\n${promptWithContext}`
         : bootstrap;
     }
-    if (!sharedCodexSession) {
+    const shouldRetrieveMemory =
+      !sharedCodexSession && !(agent.id === 'gemini' && threadId);
+    if (shouldRetrieveMemory) {
       const retrievalContext = await buildMemoryRetrievalContext({
         query: prompt,
         chatId,

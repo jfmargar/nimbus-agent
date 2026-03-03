@@ -53,6 +53,7 @@ function createRunnerHarness(overrides = {}) {
   let bootstrapCalls = 0;
   let retrievalCalls = 0;
   let lastBuildSharedPromptArgs = null;
+  let lastBuildPromptArgs = null;
 
   const codexAgent = {
     id: 'codex',
@@ -74,6 +75,7 @@ function createRunnerHarness(overrides = {}) {
       return { text: 'respuesta nueva', sawText: true };
     },
   };
+  const configuredAgent = overrides.agent || codexAgent;
 
   const runner = createAgentRunner({
     agentMaxBuffer: 1024 * 1024,
@@ -86,7 +88,13 @@ function createRunnerHarness(overrides = {}) {
       retrievalCalls += 1;
       return '';
     },
-    buildPrompt: (prompt) => prompt,
+    buildPrompt: (...args) => {
+      lastBuildPromptArgs = args;
+      if (typeof overrides.buildPrompt === 'function') {
+        return overrides.buildPrompt(...args);
+      }
+      return args[0];
+    },
     buildSharedSessionPrompt: (...args) => {
       lastBuildSharedPromptArgs = args;
       if (typeof overrides.buildSharedSessionPrompt === 'function') {
@@ -147,10 +155,12 @@ function createRunnerHarness(overrides = {}) {
         },
       ];
     },
-    getAgent: () => codexAgent,
-    getAgentLabel: () => 'codex',
-    getGlobalAgent: () => 'codex',
-    getGlobalModels: () => ({ codex: 'gpt-5-codex' }),
+    getAgent: () => configuredAgent,
+    getAgentLabel: () => configuredAgent.label,
+    getGlobalAgent: () => configuredAgent.id,
+    getGlobalModels: () =>
+      overrides.globalModels ||
+      (configuredAgent.id === 'codex' ? { codex: 'gpt-5-codex' } : {}),
     getGlobalThinking: () => 'medium',
     getDefaultAgentCwd: () => projectDir,
     getLocalCodexSessionMeta: async (threadId) => {
@@ -212,6 +222,7 @@ function createRunnerHarness(overrides = {}) {
     },
     threadTurns,
     defaultTimeZone: 'Europe/Madrid',
+    runGeminiAcpTurn: overrides.runGeminiAcpTurn,
     wrapCommandWithPty: (value) => value,
   });
 
@@ -224,6 +235,7 @@ function createRunnerHarness(overrides = {}) {
     getBootstrapCalls: () => bootstrapCalls,
     getExecCalls: () => execCalls,
     getExecWithPtyCalls: () => execWithPtyCalls,
+    getLastBuildPromptArgs: () => lastBuildPromptArgs,
     getLastBuildSharedPromptArgs: () => lastBuildSharedPromptArgs,
     getLastExecWithPtyOptions: () => lastExecWithPtyOptions,
     getRetrievalCalls: () => retrievalCalls,
@@ -772,4 +784,41 @@ test('runAgentForChat keeps enriched prompt path for non-codex agents', async ()
   const text = await runner.runAgentForChat(1, 'Hola');
 
   assert.equal(text, 'salida final');
+});
+
+test('runAgentForChat does not inject retrieved memory into resumed Gemini sessions', async () => {
+  const geminiRequests = [];
+  const harness = createRunnerHarness({
+    agent: {
+      id: 'gemini',
+      label: 'gemini',
+      mergeStderr: false,
+      buildCommand: ({ prompt }) => `gemini ${JSON.stringify(prompt)}`,
+      parseOutput: () => ({ text: 'salida final', threadId: 'session-1', sawJson: true }),
+    },
+    resolveThreadId: () => ({
+      threadKey: 'chat:root:gemini',
+      threadId: 'session-1',
+      migrated: false,
+    }),
+    buildMemoryRetrievalContext: async () => {
+      throw new Error('memory retrieval should not run for resumed Gemini turns');
+    },
+    runGeminiAcpTurn: async (request) => {
+      geminiRequests.push(request);
+      return {
+        text: 'respuesta gemini',
+        threadId: request.threadId,
+      };
+    },
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Hola otra vez');
+
+  assert.equal(text, 'respuesta gemini');
+  assert.equal(harness.getRetrievalCalls(), 0);
+  assert.equal(geminiRequests.length, 1);
+  assert.equal(geminiRequests[0].threadId, 'session-1');
+  assert.doesNotMatch(geminiRequests[0].prompt, /Relevant memory retrieved:/);
+  assert.match(geminiRequests[0].prompt, /Hola otra vez/);
 });
