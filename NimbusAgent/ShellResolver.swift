@@ -94,7 +94,7 @@ enum ShellResolver {
         return result
     }
 
-    static func expandHome(_ value: String) -> String {
+    nonisolated static func expandHome(_ value: String) -> String {
         NSString(string: value).expandingTildeInPath
     }
 
@@ -143,7 +143,7 @@ enum ShellResolver {
         return nil
     }
 
-    private static func splitPath(_ value: String) -> [String] {
+    nonisolated private static func splitPath(_ value: String) -> [String] {
         value
             .split(separator: ":")
             .map(String.init)
@@ -151,7 +151,7 @@ enum ShellResolver {
             .filter { !$0.isEmpty }
     }
 
-    private static func deduplicate(_ values: [String]) -> [String] {
+    nonisolated private static func deduplicate(_ values: [String]) -> [String] {
         var seen = Set<String>()
         var result: [String] = []
         for value in values {
