@@ -132,6 +132,7 @@ function createGeminiAcpRunner(options = {}) {
     let toolHeartbeat = null;
     let activeToolLabel = '';
     let activeToolStartedAt = 0;
+    let acceptSessionUpdates = false;
 
     async function emitEvent(event) {
       if (typeof onEvent !== 'function' || !event) return;
@@ -230,6 +231,9 @@ function createGeminiAcpRunner(options = {}) {
       async sessionUpdate(params) {
         const update = params?.update;
         if (!update || typeof update !== 'object') return;
+        if (!acceptSessionUpdates) {
+          return;
+        }
         if (update.sessionUpdate === 'tool_call') {
           const title = buildToolTitle(update);
           if (update.toolCallId) {
@@ -363,6 +367,7 @@ function createGeminiAcpRunner(options = {}) {
         sessionId = String(sessionResult?.sessionId || '').trim();
       }
 
+      acceptSessionUpdates = true;
       await emitEvent({
         type: 'status',
         agent: 'gemini',
