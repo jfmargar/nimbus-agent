@@ -104,6 +104,7 @@ function createGeminiAcpRunner(options = {}) {
       model,
       env,
       onApprovalRequest,
+      onEvent,
       signal,
     } = runOptions;
     const sdk = loadSdk();
@@ -125,6 +126,20 @@ function createGeminiAcpRunner(options = {}) {
     let abortListener = null;
     let connection = null;
     const outputChunks = [];
+    let announcedResponse = false;
+
+    async function emitEvent(event) {
+      if (typeof onEvent !== 'function' || !event) return;
+      try {
+        await onEvent(event);
+      } catch (err) {
+        console.warn('Gemini progress event failed:', err);
+      }
+    }
+
+    function buildToolTitle(update) {
+      return String(update?.title || update?.toolCallId || 'tool').trim();
+    }
 
     if (child.stderr) {
       child.stderr.setEncoding('utf8');
@@ -139,6 +154,14 @@ function createGeminiAcpRunner(options = {}) {
 
     const client = {
       async requestPermission(params) {
+        await emitEvent({
+          type: 'status',
+          agent: 'gemini',
+          phase: 'awaiting_approval',
+          message: `Gemini: esperando permiso para ${String(
+            params?.toolCall?.title || 'continuar'
+          ).trim()}.`,
+        });
         if (typeof onApprovalRequest !== 'function') {
           const rejectOption = params.options.find(
             (option) => option.kind === 'reject_once'
@@ -170,10 +193,45 @@ function createGeminiAcpRunner(options = {}) {
       async sessionUpdate(params) {
         const update = params?.update;
         if (!update || typeof update !== 'object') return;
+        if (update.sessionUpdate === 'tool_call') {
+          await emitEvent({
+            type: 'tool_activity',
+            agent: 'gemini',
+            tool: buildToolTitle(update),
+            message: `Gemini: ejecutando ${buildToolTitle(update)}.`,
+          });
+          return;
+        }
+        if (update.sessionUpdate === 'tool_call_update') {
+          const statusText =
+            update.status === 'completed'
+              ? 'completó'
+              : update.status === 'failed'
+                ? 'falló'
+                : 'actualizó';
+          await emitEvent({
+            type: 'tool_activity',
+            agent: 'gemini',
+            tool: String(update.toolCallId || 'tool').trim(),
+            message: `Gemini: ${statusText} ${String(
+              update.toolCallId || 'una herramienta'
+            ).trim()}.`,
+          });
+          return;
+        }
         if (
           update.sessionUpdate === 'agent_message_chunk' &&
           update.content?.type === 'text'
         ) {
+          if (!announcedResponse) {
+            announcedResponse = true;
+            await emitEvent({
+              type: 'status',
+              agent: 'gemini',
+              phase: 'responding',
+              message: 'Gemini: preparando respuesta...',
+            });
+          }
           outputChunks.push(String(update.content.text || ''));
         }
       },
@@ -196,6 +254,12 @@ function createGeminiAcpRunner(options = {}) {
         Readable.toWeb(child.stdout)
       );
       connection = new sdk.ClientSideConnection(() => client, stream);
+      await emitEvent({
+        type: 'status',
+        agent: 'gemini',
+        phase: 'initializing',
+        message: 'Gemini: iniciando sesión...',
+      });
       timeoutTimer = setTimeout(() => {
         if (completed) return;
         didTimeout = true;
@@ -214,6 +278,12 @@ function createGeminiAcpRunner(options = {}) {
       ]);
 
       if (sessionId) {
+        await emitEvent({
+          type: 'status',
+          agent: 'gemini',
+          phase: 'resuming',
+          message: 'Gemini: retomando sesión...',
+        });
         await Promise.race([
           connection.loadSession({
             sessionId,
@@ -223,6 +293,12 @@ function createGeminiAcpRunner(options = {}) {
           childError,
         ]);
       } else {
+        await emitEvent({
+          type: 'status',
+          agent: 'gemini',
+          phase: 'new_session',
+          message: 'Gemini: creando sesión...',
+        });
         const sessionResult = await Promise.race([
           connection.newSession({
             cwd: cwd || process.cwd(),
@@ -233,6 +309,12 @@ function createGeminiAcpRunner(options = {}) {
         sessionId = String(sessionResult?.sessionId || '').trim();
       }
 
+      await emitEvent({
+        type: 'status',
+        agent: 'gemini',
+        phase: 'processing',
+        message: 'Gemini: procesando solicitud...',
+      });
       await Promise.race([
         connection.prompt({
           sessionId,

@@ -140,3 +140,59 @@ test('gemini ACP runner honors AIPAL_GEMINI_APPROVAL_MODE=yolo', async () => {
   });
   delete process.env.AIPAL_GEMINI_APPROVAL_MODE;
 });
+
+test('gemini ACP runner emits progress events while processing', async () => {
+  delete process.env.AIPAL_GEMINI_APPROVAL_MODE;
+  const child = createChildProcess();
+  const events = [];
+
+  const runner = createGeminiAcpRunner({
+    timeoutMs: 5000,
+    spawnImpl: () => child,
+    loadSdk: () => ({
+      PROTOCOL_VERSION: '1',
+      ndJsonStream: () => ({}),
+      ClientSideConnection: class {
+        constructor(createClient) {
+          this.client = createClient();
+        }
+        async initialize() {}
+        async newSession() {
+          return { sessionId: 'session-1' };
+        }
+        async prompt() {
+          await this.client.sessionUpdate({
+            update: {
+              sessionUpdate: 'tool_call',
+              title: 'Run shell command',
+              status: 'in_progress',
+            },
+          });
+          await this.client.sessionUpdate({
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: 'Hola' },
+            },
+          });
+          return { stopReason: 'end_turn' };
+        }
+      },
+    }),
+  });
+
+  await runner.runTurn({
+    cwd: process.cwd(),
+    prompt: 'hola',
+    onEvent: async (event) => {
+      events.push(event.message);
+    },
+  });
+
+  assert.deepEqual(events, [
+    'Gemini: iniciando sesión...',
+    'Gemini: creando sesión...',
+    'Gemini: procesando solicitud...',
+    'Gemini: ejecutando Run shell command.',
+    'Gemini: preparando respuesta...',
+  ]);
+});

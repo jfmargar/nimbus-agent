@@ -28,9 +28,9 @@ function registerMediaHandlers(options) {
 
   async function createExecutionFeedback(ctx, effectiveAgentId) {
     const useProgress =
-      codexProgressUpdatesEnabled &&
-      effectiveAgentId === 'codex' &&
-      typeof beginProgress === 'function';
+      typeof beginProgress === 'function' &&
+      ((effectiveAgentId === 'codex' && codexProgressUpdatesEnabled) ||
+        effectiveAgentId === 'gemini');
     if (!useProgress) {
       return {
         onEvent: undefined,
@@ -38,7 +38,11 @@ function registerMediaHandlers(options) {
         stopTyping: startTyping(ctx),
       };
     }
-    const progress = await beginProgress(ctx, 'Codex: iniciando sesion...');
+    const initialText =
+      effectiveAgentId === 'gemini'
+        ? 'Gemini: iniciando sesión...'
+        : 'Codex: iniciando sesion...';
+    const progress = await beginProgress(ctx, initialText);
     return {
       onEvent: async (event) => {
         if (!progress || event?.type === 'output_text') return;

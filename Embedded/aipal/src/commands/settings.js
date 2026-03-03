@@ -468,9 +468,9 @@ function registerSettingsCommands(options) {
 
   async function createExecutionFeedback(ctx, effectiveAgentId, initialText) {
     const useProgress =
-      codexProgressUpdatesEnabled &&
-      effectiveAgentId === 'codex' &&
-      typeof beginProgress === 'function';
+      typeof beginProgress === 'function' &&
+      ((effectiveAgentId === 'codex' && codexProgressUpdatesEnabled) ||
+        effectiveAgentId === 'gemini');
     if (!useProgress) {
       return {
         onEvent: undefined,
@@ -480,7 +480,12 @@ function registerSettingsCommands(options) {
     }
     const progress = await beginProgress(
       ctx,
-      String(initialText || 'Codex: iniciando sesion...').trim()
+      String(
+        initialText ||
+          (effectiveAgentId === 'gemini'
+            ? 'Gemini: iniciando sesión...'
+            : 'Codex: iniciando sesion...')
+      ).trim()
     );
     return {
       onEvent: async (event) => {

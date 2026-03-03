@@ -1096,6 +1096,7 @@ function createAgentRunner(options) {
         prompt: finalPrompt,
         threadId,
         model,
+        onEvent,
         onApprovalRequest: runOptions.onApprovalRequest,
       });
       await syncThreadAndProject({
