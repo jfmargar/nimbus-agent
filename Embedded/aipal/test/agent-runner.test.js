@@ -86,6 +86,9 @@ function createRunnerHarness(overrides = {}) {
     },
     buildMemoryRetrievalContext: async () => {
       retrievalCalls += 1;
+      if (typeof overrides.buildMemoryRetrievalContext === 'function') {
+        return overrides.buildMemoryRetrievalContext();
+      }
       return '';
     },
     buildPrompt: (...args) => {
@@ -821,4 +824,53 @@ test('runAgentForChat does not inject retrieved memory into resumed Gemini sessi
   assert.equal(geminiRequests[0].threadId, 'session-1');
   assert.doesNotMatch(geminiRequests[0].prompt, /Relevant memory retrieved:/);
   assert.match(geminiRequests[0].prompt, /Hola otra vez/);
+});
+
+test('runAgentForChat starts Gemini sessions with GEMINI.md bootstrap and no retrieved memory', async () => {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aipal-agent-runner-project-'));
+  fs.writeFileSync(
+    path.join(projectDir, 'GEMINI.md'),
+    '# Contexto\nUsa glab para GitLab.\n',
+    'utf8'
+  );
+  const geminiRequests = [];
+  const harness = createRunnerHarness({
+    projectDir,
+    agent: {
+      id: 'gemini',
+      label: 'gemini',
+      mergeStderr: false,
+      buildCommand: ({ prompt }) => `gemini ${JSON.stringify(prompt)}`,
+      parseOutput: () => ({ text: 'salida final', threadId: 'session-1', sawJson: true }),
+    },
+    resolveThreadId: () => ({
+      threadKey: 'chat:root:gemini',
+      threadId: '',
+      migrated: false,
+    }),
+    buildMemoryRetrievalContext: async () => {
+      throw new Error('memory retrieval should not run for Gemini turns');
+    },
+    runGeminiAcpTurn: async (request) => {
+      geminiRequests.push(request);
+      return {
+        text: 'respuesta gemini',
+        threadId: 'session-1',
+      };
+    },
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Hola inicial');
+
+  assert.equal(text, 'respuesta gemini');
+  assert.equal(harness.getBootstrapCalls(), 0);
+  assert.equal(harness.getRetrievalCalls(), 0);
+  assert.equal(geminiRequests.length, 1);
+  assert.match(
+    geminiRequests[0].prompt,
+    new RegExp(`lee ${path.join(projectDir, 'GEMINI.md').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
+  );
+  assert.match(geminiRequests[0].prompt, /Hola inicial/);
+  assert.doesNotMatch(geminiRequests[0].prompt, /Relevant memory retrieved:/);
+  assert.doesNotMatch(geminiRequests[0].prompt, /Bootstrap config:/);
 });

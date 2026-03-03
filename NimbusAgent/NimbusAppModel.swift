@@ -113,6 +113,15 @@ final class NimbusAppModel: ObservableObject {
             return
         }
 
+        if bot == .gemini {
+            do {
+                try resetGeminiSessionState()
+                appendLog("Sesión persistida de Gemini limpiada para arrancar en limpio.", for: bot)
+            } catch {
+                appendLog("No se pudo limpiar la sesión persistida de Gemini: \(error.localizedDescription)", for: bot)
+            }
+        }
+
         let env = EnvAssembler.build(settings: settings, token: token, bot: bot)
         let cwdURL = resolveWorkingDirectory(for: bot)
 
@@ -338,6 +347,14 @@ final class NimbusAppModel: ObservableObject {
 
         try? FileManager.default.createDirectory(at: runtimeURL, withIntermediateDirectories: true, attributes: nil)
         return runtimeURL
+    }
+
+    private func resetGeminiSessionState() throws {
+        let threadsURL = EnvAssembler.aipalStateHome(for: .gemini)
+            .appendingPathComponent("threads.json", isDirectory: false)
+        if FileManager.default.fileExists(atPath: threadsURL.path) {
+            try FileManager.default.removeItem(at: threadsURL)
+        }
     }
 
     private func bundledNodeURL() -> URL? {

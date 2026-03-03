@@ -35,6 +35,24 @@ function normalizeDateInput(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+async function buildGeminiProjectBootstrap(cwd) {
+  const normalizedCwd = normalizeProjectCwd(cwd);
+  if (!normalizedCwd) return '';
+  const geminiMdPath = path.join(normalizedCwd, 'GEMINI.md');
+  try {
+    const stat = await fs.stat(geminiMdPath);
+    if (!stat.isFile()) return '';
+    return [
+      'Session bootstrap:',
+      `Antes de responder en esta sesión, lee ${geminiMdPath} y úsalo como contexto del proyecto.`,
+    ].join('\n');
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return '';
+    console.warn('Failed to inspect GEMINI.md bootstrap file:', err);
+    return '';
+  }
+}
+
 function createAgentRunner(options) {
   const {
     agentMaxBuffer,
@@ -1008,13 +1026,18 @@ function createAgentRunner(options) {
       });
     }
     if (!threadId && !sharedCodexSession) {
-      const bootstrap = await buildBootstrapContext({ threadKey });
-      promptWithContext = promptWithContext
-        ? `${bootstrap}\n\n${promptWithContext}`
-        : bootstrap;
+      const bootstrap =
+        agent.id === 'gemini'
+          ? await buildGeminiProjectBootstrap(executionCwd)
+          : await buildBootstrapContext({ threadKey });
+      if (bootstrap) {
+        promptWithContext = promptWithContext
+          ? `${bootstrap}\n\n${promptWithContext}`
+          : bootstrap;
+      }
     }
     const shouldRetrieveMemory =
-      !sharedCodexSession && !(agent.id === 'gemini' && threadId);
+      !sharedCodexSession && agent.id !== 'gemini';
     if (shouldRetrieveMemory) {
       const retrievalContext = await buildMemoryRetrievalContext({
         query: prompt,
