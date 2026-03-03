@@ -56,6 +56,7 @@ async function buildGeminiProjectBootstrap(cwd) {
 function createAgentRunner(options) {
   const {
     agentMaxBuffer,
+    buildGeminiPrompt,
     agentTimeoutMs,
     buildBootstrapContext,
     buildMemoryRetrievalContext,
@@ -1054,22 +1055,30 @@ function createAgentRunner(options) {
     }
 
     const thinking = String(thinkingOverride || '').trim() || getGlobalThinking();
-    const finalPrompt = sharedCodexSession
-      ? buildSharedSessionPrompt(
-          promptWithContext,
-          imagePaths || [],
-          scriptContext,
-          documentPaths || []
-        )
-      : buildPrompt(
-          promptWithContext,
-          imagePaths || [],
-          imageDir,
-          scriptContext,
-          documentPaths || [],
-          documentDir,
-          { includeFileInstructions: shouldIncludeFileInstructions }
-        );
+    const finalPrompt =
+      agent.id === 'gemini'
+        ? buildGeminiPrompt(
+            promptWithContext,
+            imagePaths || [],
+            scriptContext,
+            documentPaths || []
+          )
+        : sharedCodexSession
+          ? buildSharedSessionPrompt(
+              promptWithContext,
+              imagePaths || [],
+              scriptContext,
+              documentPaths || []
+            )
+          : buildPrompt(
+              promptWithContext,
+              imagePaths || [],
+              imageDir,
+              scriptContext,
+              documentPaths || [],
+              documentDir,
+              { includeFileInstructions: shouldIncludeFileInstructions }
+            );
     if (!String(finalPrompt || '').trim()) {
       throw new Error(
         'No encontré contenido útil para enviar a Codex en este turno.'

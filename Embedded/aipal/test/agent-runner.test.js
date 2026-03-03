@@ -52,6 +52,8 @@ function createRunnerHarness(overrides = {}) {
   let lastExecWithPtyOptions = null;
   let bootstrapCalls = 0;
   let retrievalCalls = 0;
+  let geminiPromptCalls = 0;
+  let lastBuildGeminiPromptArgs = null;
   let lastBuildSharedPromptArgs = null;
   let lastBuildPromptArgs = null;
 
@@ -90,6 +92,14 @@ function createRunnerHarness(overrides = {}) {
         return overrides.buildMemoryRetrievalContext();
       }
       return '';
+    },
+    buildGeminiPrompt: (...args) => {
+      geminiPromptCalls += 1;
+      lastBuildGeminiPromptArgs = args;
+      if (typeof overrides.buildGeminiPrompt === 'function') {
+        return overrides.buildGeminiPrompt(...args);
+      }
+      return args[0];
     },
     buildPrompt: (...args) => {
       lastBuildPromptArgs = args;
@@ -238,6 +248,8 @@ function createRunnerHarness(overrides = {}) {
     getBootstrapCalls: () => bootstrapCalls,
     getExecCalls: () => execCalls,
     getExecWithPtyCalls: () => execWithPtyCalls,
+    getGeminiPromptCalls: () => geminiPromptCalls,
+    getLastBuildGeminiPromptArgs: () => lastBuildGeminiPromptArgs,
     getLastBuildPromptArgs: () => lastBuildPromptArgs,
     getLastBuildSharedPromptArgs: () => lastBuildSharedPromptArgs,
     getLastExecWithPtyOptions: () => lastExecWithPtyOptions,
@@ -864,6 +876,7 @@ test('runAgentForChat starts Gemini sessions with GEMINI.md bootstrap and no ret
 
   assert.equal(text, 'respuesta gemini');
   assert.equal(harness.getBootstrapCalls(), 0);
+  assert.equal(harness.getGeminiPromptCalls(), 1);
   assert.equal(harness.getRetrievalCalls(), 0);
   assert.equal(geminiRequests.length, 1);
   assert.match(
@@ -873,4 +886,51 @@ test('runAgentForChat starts Gemini sessions with GEMINI.md bootstrap and no ret
   assert.match(geminiRequests[0].prompt, /Hola inicial/);
   assert.doesNotMatch(geminiRequests[0].prompt, /Relevant memory retrieved:/);
   assert.doesNotMatch(geminiRequests[0].prompt, /Bootstrap config:/);
+});
+
+test('runAgentForChat uses a minimal Gemini prompt wrapper instead of the generic prompt builder', async () => {
+  const geminiRequests = [];
+  const harness = createRunnerHarness({
+    agent: {
+      id: 'gemini',
+      label: 'gemini',
+      mergeStderr: false,
+      buildCommand: ({ prompt }) => `gemini ${JSON.stringify(prompt)}`,
+      parseOutput: () => ({ text: 'salida final', threadId: 'session-1', sawJson: true }),
+    },
+    resolveThreadId: () => ({
+      threadKey: 'chat:root:gemini',
+      threadId: '',
+      migrated: false,
+    }),
+    buildGeminiPrompt: (prompt, imagePaths, scriptContext, documentPaths) =>
+      JSON.stringify({ prompt, imagePaths, scriptContext, documentPaths }),
+    buildPrompt: () => {
+      throw new Error('generic buildPrompt should not run for Gemini');
+    },
+    runGeminiAcpTurn: async (request) => {
+      geminiRequests.push(request);
+      return {
+        text: 'respuesta gemini',
+        threadId: 'session-1',
+      };
+    },
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Resume esto', {
+    imagePaths: ['/tmp/image.png'],
+    documentPaths: ['/tmp/doc.pdf'],
+    scriptContext: 'salida comando',
+  });
+
+  assert.equal(text, 'respuesta gemini');
+  assert.equal(harness.getGeminiPromptCalls(), 1);
+  assert.equal(harness.getLastBuildPromptArgs(), null);
+  assert.deepEqual(harness.getLastBuildGeminiPromptArgs(), [
+    'Resume esto',
+    ['/tmp/image.png'],
+    'salida comando',
+    ['/tmp/doc.pdf'],
+  ]);
+  assert.equal(geminiRequests.length, 1);
 });
