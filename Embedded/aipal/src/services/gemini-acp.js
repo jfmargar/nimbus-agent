@@ -94,6 +94,7 @@ function createGeminiAcpRunner(options = {}) {
     spawnImpl = spawn,
     loadSdk = loadAcpSdk,
     timeoutMs = 120000,
+    toolHeartbeatMs = 8000,
   } = options;
 
   async function runTurn(runOptions = {}) {
@@ -127,6 +128,10 @@ function createGeminiAcpRunner(options = {}) {
     let connection = null;
     const outputChunks = [];
     let announcedResponse = false;
+    const toolTitles = new Map();
+    let toolHeartbeat = null;
+    let activeToolLabel = '';
+    let activeToolStartedAt = 0;
 
     async function emitEvent(event) {
       if (typeof onEvent !== 'function' || !event) return;
@@ -139,6 +144,38 @@ function createGeminiAcpRunner(options = {}) {
 
     function buildToolTitle(update) {
       return String(update?.title || update?.toolCallId || 'tool').trim();
+    }
+
+    function clearToolHeartbeat() {
+      if (!toolHeartbeat) return;
+      clearInterval(toolHeartbeat);
+      toolHeartbeat = null;
+    }
+
+    function formatElapsedLabel(startedAt) {
+      const elapsedSeconds = Math.max(
+        1,
+        Math.floor((Date.now() - startedAt) / 1000)
+      );
+      return `${elapsedSeconds} s`;
+    }
+
+    function startToolHeartbeat(label) {
+      clearToolHeartbeat();
+      activeToolLabel = String(label || 'una herramienta').trim();
+      activeToolStartedAt = Date.now();
+      if (!toolHeartbeatMs || toolHeartbeatMs <= 0) return;
+      toolHeartbeat = setInterval(() => {
+        emitEvent({
+          type: 'tool_activity',
+          agent: 'gemini',
+          tool: activeToolLabel,
+          state: 'running',
+          message: `Gemini: ${activeToolLabel} sigue en curso (${formatElapsedLabel(
+            activeToolStartedAt
+          )}).`,
+        }).catch(() => {});
+      }, toolHeartbeatMs);
     }
 
     if (child.stderr) {
@@ -194,15 +231,27 @@ function createGeminiAcpRunner(options = {}) {
         const update = params?.update;
         if (!update || typeof update !== 'object') return;
         if (update.sessionUpdate === 'tool_call') {
+          const title = buildToolTitle(update);
+          if (update.toolCallId) {
+            toolTitles.set(String(update.toolCallId).trim(), title);
+          }
+          startToolHeartbeat(title);
           await emitEvent({
             type: 'tool_activity',
             agent: 'gemini',
-            tool: buildToolTitle(update),
-            message: `Gemini: ejecutando ${buildToolTitle(update)}.`,
+            tool: title,
+            state: 'running',
+            message: `Gemini: ejecutando ${title}.`,
           });
           return;
         }
         if (update.sessionUpdate === 'tool_call_update') {
+          const toolLabel =
+            toolTitles.get(String(update.toolCallId || '').trim()) ||
+            buildToolTitle(update);
+          if (update.status === 'completed' || update.status === 'failed') {
+            clearToolHeartbeat();
+          }
           const statusText =
             update.status === 'completed'
               ? 'completó'
@@ -212,10 +261,14 @@ function createGeminiAcpRunner(options = {}) {
           await emitEvent({
             type: 'tool_activity',
             agent: 'gemini',
-            tool: String(update.toolCallId || 'tool').trim(),
-            message: `Gemini: ${statusText} ${String(
-              update.toolCallId || 'una herramienta'
-            ).trim()}.`,
+            tool: toolLabel,
+            state:
+              update.status === 'completed'
+                ? 'finished'
+                : update.status === 'failed'
+                  ? 'failed'
+                  : 'running',
+            message: `Gemini: ${statusText} ${toolLabel}.`,
           });
           return;
         }
@@ -223,6 +276,7 @@ function createGeminiAcpRunner(options = {}) {
           update.sessionUpdate === 'agent_message_chunk' &&
           update.content?.type === 'text'
         ) {
+          clearToolHeartbeat();
           if (!announcedResponse) {
             announcedResponse = true;
             await emitEvent({
@@ -324,6 +378,7 @@ function createGeminiAcpRunner(options = {}) {
       ]);
 
       completed = true;
+      clearToolHeartbeat();
       return {
         text: outputChunks.join('').trim(),
         threadId: sessionId,
@@ -352,6 +407,7 @@ function createGeminiAcpRunner(options = {}) {
       if (signal && abortListener) {
         signal.removeEventListener('abort', abortListener);
       }
+      clearToolHeartbeat();
       await killChild(child).catch(() => {});
     }
   }

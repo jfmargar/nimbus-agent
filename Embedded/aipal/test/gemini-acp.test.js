@@ -196,3 +196,69 @@ test('gemini ACP runner emits progress events while processing', async () => {
     'Gemini: preparando respuesta...',
   ]);
 });
+
+test('gemini ACP runner emits keepalive updates for long-running tools', async () => {
+  delete process.env.AIPAL_GEMINI_APPROVAL_MODE;
+  const child = createChildProcess();
+  const events = [];
+
+  const runner = createGeminiAcpRunner({
+    timeoutMs: 5000,
+    toolHeartbeatMs: 1100,
+    spawnImpl: () => child,
+    loadSdk: () => ({
+      PROTOCOL_VERSION: '1',
+      ndJsonStream: () => ({}),
+      ClientSideConnection: class {
+        constructor(createClient) {
+          this.client = createClient();
+        }
+        async initialize() {}
+        async newSession() {
+          return { sessionId: 'session-1' };
+        }
+        async prompt() {
+          await this.client.sessionUpdate({
+            update: {
+              sessionUpdate: 'tool_call',
+              toolCallId: 'tool-1',
+              title: 'Shell',
+              status: 'in_progress',
+            },
+          });
+          await new Promise((resolve) => setTimeout(resolve, 1250));
+          await this.client.sessionUpdate({
+            update: {
+              sessionUpdate: 'tool_call_update',
+              toolCallId: 'tool-1',
+              status: 'completed',
+              content: [],
+            },
+          });
+          await this.client.sessionUpdate({
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: 'Hola' },
+            },
+          });
+          return { stopReason: 'end_turn' };
+        }
+      },
+    }),
+  });
+
+  await runner.runTurn({
+    cwd: process.cwd(),
+    prompt: 'hola',
+    onEvent: async (event) => {
+      events.push(event.message);
+    },
+  });
+
+  assert.equal(events.includes('Gemini: ejecutando Shell.'), true);
+  assert.equal(events.includes('Gemini: completó Shell.'), true);
+  assert.equal(
+    events.some((message) => /^Gemini: Shell sigue en curso \(\d+ s\)\.$/.test(message)),
+    true
+  );
+});
