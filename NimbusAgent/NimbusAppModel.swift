@@ -116,9 +116,9 @@ final class NimbusAppModel: ObservableObject {
         if bot == .gemini {
             do {
                 try resetGeminiSessionState()
-                appendLog("Sesión persistida de Gemini limpiada para arrancar en limpio.", for: bot)
+                appendLog("Sesión persistida de \(bot.label) limpiada para arrancar en limpio.", for: bot)
             } catch {
-                appendLog("No se pudo limpiar la sesión persistida de Gemini: \(error.localizedDescription)", for: bot)
+                appendLog("No se pudo limpiar la sesión persistida de \(bot.label): \(error.localizedDescription)", for: bot)
             }
         }
 

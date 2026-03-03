@@ -411,7 +411,7 @@ function registerSettingsCommands(options) {
   }
 
   function shouldShowMainMenuKeyboard() {
-    return lockedAgentId !== 'gemini';
+    return lockedAgentId !== 'opencode';
   }
 
   function buildMainMenuReplyOptions() {
@@ -470,7 +470,7 @@ function registerSettingsCommands(options) {
     const useProgress =
       typeof beginProgress === 'function' &&
       ((effectiveAgentId === 'codex' && codexProgressUpdatesEnabled) ||
-        effectiveAgentId === 'gemini');
+        effectiveAgentId === 'opencode');
     if (!useProgress) {
       return {
         onEvent: undefined,
@@ -482,8 +482,8 @@ function registerSettingsCommands(options) {
       ctx,
       String(
         initialText ||
-          (effectiveAgentId === 'gemini'
-            ? 'Gemini: iniciando sesión...'
+          (effectiveAgentId === 'opencode'
+            ? 'Opencode: iniciando sesión...'
             : 'Codex: iniciando sesion...')
       ).trim()
     );

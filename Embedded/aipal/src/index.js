@@ -460,7 +460,7 @@ function setThreadForAgent(chatId, topicId, agentId, threadId) {
 
 bot.start(async (ctx) => {
   const replyOptions =
-    LOCKED_AGENT === 'gemini'
+    LOCKED_AGENT === 'opencode'
       ? undefined
       : {
           reply_markup: buildMainMenuKeyboard(),

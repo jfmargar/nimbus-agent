@@ -18,7 +18,7 @@ final class PreflightService {
         let effectiveEnv = EnvAssembler.build(settings: settings, token: token, bot: bot)
         let effectiveCodexHome = effectiveEnv["CODEX_HOME"] ?? EnvAssembler.effectiveCodexHome()
         let defaultCodexHome = "\(NSHomeDirectory())/.codex"
-        let requiredCommand = bot == .codex ? "codex" : "gemini"
+        let requiredCommand = bot == .codex ? "codex" : "opencode"
 
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedToken.isEmpty {
@@ -77,14 +77,15 @@ final class PreflightService {
         } else {
             details.append("AIPAL_STATE_HOME: \(effectiveEnv["AIPAL_STATE_HOME"] ?? "(unset)")")
             details.append("XDG_CONFIG_HOME: \(effectiveEnv["XDG_CONFIG_HOME"] ?? "(unset)")")
-            details.append("Gemini approval mode: \(effectiveEnv["AIPAL_GEMINI_APPROVAL_MODE"] ?? "default")")
+            details.append("Secondary bot runtime: CLI")
             details.append("GLAB_CONFIG_DIR: \(effectiveEnv["GLAB_CONFIG_DIR"] ?? "(unset)")")
             details.append("SSH_AUTH_SOCK: \((effectiveEnv["SSH_AUTH_SOCK"]?.isEmpty == false) ? "present" : "missing")")
             Self.appendGlabDiagnostics(
                 warnings: &warnings,
                 details: &details,
                 environment: effectiveEnv,
-                workingDirectory: effectiveEnv["AIPAL_AGENT_CWD"]
+                workingDirectory: effectiveEnv["AIPAL_AGENT_CWD"],
+                botLabel: bot.label
             )
         }
         if bot == .codex, effectiveCodexHome != defaultCodexHome {
@@ -111,10 +112,11 @@ final class PreflightService {
         warnings: inout [String],
         details: inout [String],
         environment: [String: String],
-        workingDirectory: String?
+        workingDirectory: String?,
+        botLabel: String
     ) {
         guard let glabPath = ShellResolver.resolveCommandPath("glab") else {
-            warnings.append("No se encontró `glab` en PATH. El acceso a GitLab desde Gemini puede fallar.")
+            warnings.append("No se encontró `glab` en PATH. El acceso a GitLab desde \(botLabel) puede fallar.")
             return
         }
 
@@ -148,7 +150,7 @@ final class PreflightService {
             environment: environment,
             currentDirectory: workingDirectory
         ) else {
-            warnings.append("No se pudo ejecutar `glab auth status` con el entorno de Gemini.")
+            warnings.append("No se pudo ejecutar `glab auth status` con el entorno de \(botLabel).")
             return
         }
 
@@ -156,7 +158,7 @@ final class PreflightService {
         if result.terminationStatus == 0 {
             details.append("glab auth status: \(summary)")
         } else {
-            warnings.append("`glab auth status` falló para Gemini: \(summary)")
+            warnings.append("`glab auth status` falló para \(botLabel): \(summary)")
             details.append("glab auth status raw: \(summary)")
         }
     }

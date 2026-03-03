@@ -30,7 +30,7 @@ function registerMediaHandlers(options) {
     const useProgress =
       typeof beginProgress === 'function' &&
       ((effectiveAgentId === 'codex' && codexProgressUpdatesEnabled) ||
-        effectiveAgentId === 'gemini');
+        effectiveAgentId === 'opencode');
     if (!useProgress) {
       return {
         onEvent: undefined,
@@ -39,8 +39,8 @@ function registerMediaHandlers(options) {
       };
     }
     const initialText =
-      effectiveAgentId === 'gemini'
-        ? 'Gemini: iniciando sesión...'
+      effectiveAgentId === 'opencode'
+        ? 'Opencode: iniciando sesión...'
         : 'Codex: iniciando sesion...';
     const progress = await beginProgress(ctx, initialText);
     return {

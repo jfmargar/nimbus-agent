@@ -11,7 +11,7 @@ enum NimbusBot: String, CaseIterable, Identifiable {
         case .codex:
             return "Codex"
         case .gemini:
-            return "Gemini"
+            return "Opencode"
         }
     }
 
@@ -20,7 +20,7 @@ enum NimbusBot: String, CaseIterable, Identifiable {
         case .codex:
             return "codex"
         case .gemini:
-            return "gemini"
+            return "opencode"
         }
     }
 
@@ -253,7 +253,7 @@ struct EnvAssembler {
             env["XDG_CONFIG_HOME"] = configHome(for: bot).path
         } else {
             env["AIPAL_STATE_HOME"] = aipalStateHome(for: bot).path
-            env["AIPAL_GEMINI_APPROVAL_MODE"] = "yolo"
+            env.removeValue(forKey: "AIPAL_GEMINI_APPROVAL_MODE")
         }
         env["TELEGRAM_BOT_TOKEN"] = token
         env["ALLOWED_USERS"] = settings.allowedUsers.trimmingCharacters(in: .whitespacesAndNewlines)
