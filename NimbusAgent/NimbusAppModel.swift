@@ -574,7 +574,7 @@ final class NimbusAppModel: ObservableObject {
                 ) { chunk in
                     Task { @MainActor in
                         if !sessionPatched {
-                            let pattern = "session id: ([0-9a-fA-F-]+)"
+                            let pattern = "session id.*?([0-9a-fA-F-]{36})"
                             if let regex = try? NSRegularExpression(pattern: pattern),
                                let match = regex.firstMatch(in: chunk, range: NSRange(chunk.startIndex..., in: chunk)),
                                let range = Range(match.range(at: 1), in: chunk) {
