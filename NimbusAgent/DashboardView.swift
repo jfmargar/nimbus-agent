@@ -14,6 +14,8 @@ struct DashboardView: View {
                 issuesPane
                 scanPane
             }
+
+            terminalPane
         }
         .padding(16)
         .frame(minWidth: 1180, minHeight: 720)
@@ -287,5 +289,31 @@ struct DashboardView: View {
         case .failure:
             return .red
         }
+    }
+
+    private var terminalPane: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Terminal interactivo")
+                .font(.headline)
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(model.dashboardLogs.joined(separator: "\n"))
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .id("bottom")
+                }
+                .background(Color.black.opacity(0.85))
+                .foregroundStyle(Color.green)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .onChange(of: model.dashboardLogs.count) { _ in
+                    withAnimation {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
+            }
+        }
+        .frame(height: 200)
     }
 }
