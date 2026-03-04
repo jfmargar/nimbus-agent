@@ -147,15 +147,6 @@ extension NimbusSettings {
             .map(ShellResolver.expandHome)
     }
 
-    func dashboardLocalRepositoryPathsList() -> [String] {
-        dashboardLocalRepositories
-            .split(whereSeparator: \.isNewline)
-            .map(String.init)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
-            .map(ShellResolver.expandHome)
-    }
-
     var dashboardGitHubOwnersList: [String] {
         dashboardGitHubOwners
             .split(separator: ",")

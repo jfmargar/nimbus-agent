@@ -25,11 +25,10 @@ struct IssueScanner {
         onResult: ((DashboardScanResult) -> Void)? = nil
     ) -> [DashboardIssue] {
         let labels = settings.dashboardIssueLabelsList
-        let manualPaths = settings.dashboardLocalRepositoryPathsList()
         let discoveredPaths = LocalRepositoryDiscovery().discoverRepositoryPaths(
             under: settings.dashboardRootDirectoryPathsList()
         )
-        let repositoryPaths = Array(Set(manualPaths).union(discoveredPaths)).sorted()
+        let repositoryPaths = Array(Set(discoveredPaths)).sorted()
         guard !labels.isEmpty else {
             return []
         }

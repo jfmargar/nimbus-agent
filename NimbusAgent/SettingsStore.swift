@@ -77,7 +77,6 @@ Tu objetivo es resolver este issue. Por favor, sigue estos pasos:
     var codexSandboxMode: String
     var codexProgressUpdates: Bool
     var dashboardRootDirectories: String
-    var dashboardLocalRepositories: String
     var dashboardScanTargets: String
     var dashboardGitHubOwners: String
     var dashboardGitLabGroups: String
@@ -101,7 +100,6 @@ Tu objetivo es resolver este issue. Por favor, sigue estos pasos:
         case codexSandboxMode
         case codexProgressUpdates
         case dashboardRootDirectories
-        case dashboardLocalRepositories
         case dashboardScanTargets
         case dashboardGitHubOwners
         case dashboardGitLabGroups
@@ -126,7 +124,6 @@ Tu objetivo es resolver este issue. Por favor, sigue estos pasos:
         codexSandboxMode: String,
         codexProgressUpdates: Bool,
         dashboardRootDirectories: String,
-        dashboardLocalRepositories: String,
         dashboardScanTargets: String,
         dashboardGitHubOwners: String,
         dashboardGitLabGroups: String,
@@ -149,7 +146,6 @@ Tu objetivo es resolver este issue. Por favor, sigue estos pasos:
         self.codexSandboxMode = codexSandboxMode
         self.codexProgressUpdates = codexProgressUpdates
         self.dashboardRootDirectories = dashboardRootDirectories
-        self.dashboardLocalRepositories = dashboardLocalRepositories
         self.dashboardScanTargets = dashboardScanTargets
         self.dashboardGitHubOwners = dashboardGitHubOwners
         self.dashboardGitLabGroups = dashboardGitLabGroups
@@ -174,7 +170,6 @@ Tu objetivo es resolver este issue. Por favor, sigue estos pasos:
         codexSandboxMode: "workspace-write",
         codexProgressUpdates: true,
         dashboardRootDirectories: "",
-        dashboardLocalRepositories: "",
         dashboardScanTargets: "",
         dashboardGitHubOwners: "",
         dashboardGitLabGroups: "",
@@ -201,7 +196,6 @@ Tu objetivo es resolver este issue. Por favor, sigue estos pasos:
         codexSandboxMode = try container.decodeIfPresent(String.self, forKey: .codexSandboxMode) ?? defaults.codexSandboxMode
         codexProgressUpdates = try container.decodeIfPresent(Bool.self, forKey: .codexProgressUpdates) ?? defaults.codexProgressUpdates
         dashboardRootDirectories = try container.decodeIfPresent(String.self, forKey: .dashboardRootDirectories) ?? defaults.dashboardRootDirectories
-        dashboardLocalRepositories = try container.decodeIfPresent(String.self, forKey: .dashboardLocalRepositories) ?? defaults.dashboardLocalRepositories
         dashboardScanTargets = try container.decodeIfPresent(String.self, forKey: .dashboardScanTargets) ?? defaults.dashboardScanTargets
         dashboardGitHubOwners = try container.decodeIfPresent(String.self, forKey: .dashboardGitHubOwners) ?? defaults.dashboardGitHubOwners
         dashboardGitLabGroups = try container.decodeIfPresent(String.self, forKey: .dashboardGitLabGroups) ?? defaults.dashboardGitLabGroups
@@ -253,14 +247,6 @@ Tu objetivo es resolver este issue. Por favor, sigue estos pasos:
             let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
             if !exists || !isDirectory.boolValue {
                 errors.append("La carpeta raíz del dashboard no existe o no es carpeta: \(path)")
-            }
-        }
-
-        for path in dashboardLocalRepositoryPathsList() {
-            var isDirectory: ObjCBool = false
-            let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
-            if !exists || !isDirectory.boolValue {
-                errors.append("El repo local del dashboard no existe o no es carpeta: \(path)")
             }
         }
 

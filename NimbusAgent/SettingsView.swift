@@ -145,10 +145,6 @@ struct SettingsView: View {
                                 model.pickDashboardRootDirectories()
                             }
 
-                            Button("Añadir repos") {
-                                model.pickDashboardRepositories()
-                            }
-
                             Button("Refrescar lista") {
                                 model.refreshDashboardRepositoryCatalog()
                             }
@@ -242,22 +238,30 @@ struct SettingsView: View {
     }
 
     private var dashboardRepositorySummary: some View {
-        let manualPaths = Set(model.settings.dashboardLocalRepositoryPathsList())
-        let manualRepositories = model.dashboardLocalRepositories.filter { manualPaths.contains($0.localPath) }
         let detectedCount = model.dashboardLocalRepositories.count
 
         return VStack(alignment: .leading, spacing: 6) {
             Text("Repos disponibles para escaneo: \(detectedCount)")
                 .font(.caption.weight(.medium))
 
-            if !manualRepositories.isEmpty {
-                Text("Repos añadidos manualmente: \(manualRepositories.count)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
             if detectedCount > 0 {
-                Text("Los repos autodetectados bajo las raíces no se listan aquí para mantener la ventana compacta.")
+                ForEach(model.dashboardLocalRepositories.prefix(15)) { repo in
+                    HStack(spacing: 4) {
+                        Image(systemName: repo.platform == .github ? "cat" : "fox")
+                            .foregroundStyle(.secondary)
+                            .imageScale(.small)
+                        Text(repo.repository)
+                            .font(.caption2.monospaced())
+                        Spacer()
+                    }
+                }
+                if detectedCount > 15 {
+                    Text("... y \(detectedCount - 15) repos más")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("Vacio. Añade una carpeta raíz que contenga repositorios de Git y pulsa Refrescar.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

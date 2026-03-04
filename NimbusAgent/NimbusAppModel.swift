@@ -99,24 +99,6 @@ final class NimbusAppModel: ObservableObject {
         settings.agentCwd = url.path
     }
 
-    func pickDashboardRepositories() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = true
-        panel.prompt = "Añadir repos"
-
-        let response = panel.runModal()
-        guard response == .OK else { return }
-
-        let existing = Set(settings.dashboardLocalRepositoryPathsList())
-        let additions = panel.urls.map(\.path)
-        let merged = Array(existing.union(additions)).sorted()
-        settings.dashboardLocalRepositories = merged.joined(separator: "\n")
-        refreshDashboardRepositoryCatalog()
-        persistDashboardSettingsIfPossible()
-    }
-
     func pickDashboardRootDirectories() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -135,13 +117,6 @@ final class NimbusAppModel: ObservableObject {
         persistDashboardSettingsIfPossible()
     }
 
-    func removeDashboardRepository(_ repository: DashboardLocalRepository) {
-        let filtered = settings.dashboardLocalRepositoryPathsList().filter { $0 != repository.localPath }
-        settings.dashboardLocalRepositories = filtered.joined(separator: "\n")
-        refreshDashboardRepositoryCatalog()
-        persistDashboardSettingsIfPossible()
-    }
-
     func removeDashboardRootDirectory(_ path: String) {
         let filtered = settings.dashboardRootDirectoryPathsList().filter { $0 != path }
         settings.dashboardRootDirectories = filtered.joined(separator: "\n")
@@ -151,11 +126,10 @@ final class NimbusAppModel: ObservableObject {
 
     func refreshDashboardRepositoryCatalog() {
         let environment = EnvAssembler.buildDashboardEnvironment(settings: settings)
-        let manualPaths = settings.dashboardLocalRepositoryPathsList()
         let discoveredPaths = localRepositoryDiscovery.discoverRepositoryPaths(
             under: settings.dashboardRootDirectoryPathsList()
         )
-        let paths = Array(Set(manualPaths).union(discoveredPaths)).sorted()
+        let paths = Array(Set(discoveredPaths)).sorted()
 
         dashboardLocalRepositories = localRepositoryResolver.resolveRepositories(
             from: paths,
