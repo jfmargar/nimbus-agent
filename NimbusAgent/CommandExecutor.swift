@@ -193,13 +193,10 @@ while True:
             os.kill(os.getpid(), sig)
         sys.exit(1)
 """
-        let replaced = command.replacingOccurrences(of: "'", with: "'\\''")
-        let quotedCommand = "'\\(replaced)'"
-        let pythonCommand = "python3 -c '\(snippet)' \(quotedCommand)"
-        
+        let pythonCommand = "/usr/bin/python3"
         return try runProcess(
-            executablePath: "/bin/zsh",
-            arguments: ["-lc", pythonCommand],
+            executablePath: pythonCommand,
+            arguments: ["-c", snippet, command],
             environment: environment,
             currentDirectoryURL: currentDirectoryURL,
             outputHandler: outputHandler
