@@ -566,12 +566,26 @@ final class NimbusAppModel: ObservableObject {
             let currentDirectoryURL = URL(fileURLWithPath: localPath, isDirectory: true)
 
             do {
-                let result = try CommandExecutor.runShellCommand(
+                var sessionPatched = false
+                let result = try CommandExecutor.runShellCommandWithPTY(
                     command,
                     environment: environment,
                     currentDirectoryURL: currentDirectoryURL
                 ) { chunk in
                     Task { @MainActor in
+                        if !sessionPatched {
+                            let pattern = "session id: ([0-9a-fA-F-]+)"
+                            if let regex = try? NSRegularExpression(pattern: pattern),
+                               let match = regex.firstMatch(in: chunk, range: NSRange(chunk.startIndex..., in: chunk)),
+                               let range = Range(match.range(at: 1), in: chunk) {
+                                let sessionId = String(chunk[range])
+                                sessionPatched = true
+                                let patchCommand = "sqlite3 ~/.codex/state_5.sqlite \"UPDATE threads SET source='cli' WHERE id='\\(sessionId)'\""
+                                DispatchQueue.global(qos: .userInitiated).async {
+                                    _ = try? CommandExecutor.runShellCommand(patchCommand, environment: [:])
+                                }
+                            }
+                        }
                         self.appendDashboardLog("[\(issue.repository)#\(issue.number)] \(chunk)")
                     }
                 }

@@ -112,4 +112,97 @@ enum CommandExecutor {
             outputHandler: outputHandler
         )
     }
+
+    static func runShellCommandWithPTY(
+        _ command: String,
+        environment: [String: String],
+        currentDirectoryURL: URL? = nil,
+        outputHandler: ((String) -> Void)? = nil
+    ) throws -> CommandExecutionResult {
+        let snippet = """
+import errno
+import os
+import pty
+import select
+import signal
+import sys
+
+COMMAND = sys.argv[1]
+TERM_RESPONSES = [
+    (b"\\x1b[6n", b"\\x1b[1;1R"),
+    (b"\\x1b[?1;2c", b"\\x1b[?1;0c"),
+    (b"\\x1b[c", b"\\x1b[?1;0c")
+]
+
+def forward_and_exit(sig, frame):
+    try:
+        if 'CHILD_PID' in globals():
+            os.kill(CHILD_PID, sig)
+    except OSError:
+        pass
+    sys.exit(128 + sig)
+
+for forwarded_signal in [signal.SIGINT, signal.SIGTERM, signal.SIGHUP]:
+    signal.signal(forwarded_signal, forward_and_exit)
+
+pid, master_fd = pty.fork()
+if pid == 0:
+    os.execvp("bash", ["bash", "-lc", COMMAND])
+
+CHILD_PID = pid
+recent_output = bytearray()
+
+while True:
+    try:
+        readable, _, _ = select.select([master_fd], [], [], 0.1)
+    except InterruptedError:
+        continue
+
+    if master_fd in readable:
+        try:
+            chunk = os.read(master_fd, 4096)
+        except OSError as exc:
+            if exc.errno == errno.EIO:
+                break
+            raise
+        if not chunk:
+            break
+        
+        sys.stdout.buffer.write(chunk)
+        sys.stdout.buffer.flush()
+        
+        recent_output.extend(chunk)
+        if len(recent_output) > 256:
+            recent_output = recent_output[-256:]
+            
+        for seq, resp in TERM_RESPONSES:
+            if seq in recent_output:
+                try:
+                    os.write(master_fd, resp)
+                except OSError:
+                    pass
+                recent_output = bytearray()
+
+    pid_status, status = os.waitpid(pid, os.WNOHANG)
+    if pid_status == pid:
+        if os.WIFEXITED(status):
+            sys.exit(os.WEXITSTATUS(status))
+        if os.WIFSIGNALED(status):
+            sig = os.WTERMSIG(status)
+            signal.signal(sig, signal.SIG_DFL)
+            os.kill(os.getpid(), sig)
+        sys.exit(1)
+"""
+        let replaced = command.replacingOccurrences(of: "'", with: "'\\''")
+        let quotedCommand = "'\\(replaced)'"
+        let pythonCommand = "python3 -c '\(snippet)' \(quotedCommand)"
+        
+        return try runProcess(
+            executablePath: "/bin/zsh",
+            arguments: ["-lc", pythonCommand],
+            environment: environment,
+            currentDirectoryURL: currentDirectoryURL,
+            outputHandler: outputHandler
+        )
+    }
 }
