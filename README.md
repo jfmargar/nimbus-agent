@@ -17,6 +17,7 @@ Descarga directa del paquete generado:
 - Puede ejecutar dos bots simultáneos:
   - un bot bloqueado a `codex`
   - un bot bloqueado a `gemini`
+- Incluye un **Dashboard** para descubrir repositorios locales, escanear issues (GitHub/GitLab) y ejecutar acciones sobre ellos.
 - Abre ventanas de **Configuración** y **Diagnóstico**.
 - Ejecuta **preflight** antes de arrancar para validar requisitos locales.
 - Muestra logs recientes y permite copiarlos para soporte.
@@ -117,6 +118,8 @@ Para que NimbusAgent funcione correctamente en una máquina nueva, necesitas:
 ### Recomendados / opcionales según uso
 
 - un comando de transcripción compatible para audio
+- `gh` (GitHub CLI) si quieres usar el escáner de issues de GitHub en el Dashboard
+- `glab` (GitLab CLI) si quieres usar el escáner de issues de GitLab en el Dashboard
 
 ### Solo para mantenimiento del runtime embebido
 
@@ -205,15 +208,28 @@ Notas:
 
 ### Avanzado
 
-Valores por defecto actuales:
+Valores por defecto actuales relativos al comportamiento del agente:
 
 - `AIPAL_WHISPER_CMD`: `parakeet-mlx`
+- `AIPAL_CODEX_APPROVAL_MODE`: modo por defecto
+- `AIPAL_CODEX_SANDBOX_MODE`: `workspace-write` (otros válidos: `read-only`, `danger-full-access`)
 - `AIPAL_SCRIPT_TIMEOUT_MS`: `120000`
 - `AIPAL_AGENT_TIMEOUT_MS`: `600000`
 - `AIPAL_AGENT_MAX_BUFFER`: `10485760`
 - `AIPAL_MEMORY_CURATE_EVERY`: `20`
 - `AIPAL_MEMORY_RETRIEVAL_LIMIT`: `8`
 - `AIPAL_SHUTDOWN_DRAIN_TIMEOUT_MS`: `120000`
+
+## Dashboard de Issues
+
+NimbusAgent incluye una pestaña de **Dashboard** para gestionar tareas y lanzar agentes sobre repositorios locales, sin salir de la app.
+
+Características principales:
+
+- **Autodescubrimiento**: Selecciona carpetas raíz en Preferencias y el sistema detectará recursivamente los repositorios Git locales y sus remotos.
+- **Escáner de Issues**: Utilizando los CLI instalados (`gh` y `glab`), busca issues abiertos filtrando por etiquetas (por defecto: `ai, codex, agent`).
+- **Punto de lanzamiento**: Muestra un listado de los issues detectados y ofrece acciones rápidas.
+- **Automatizaciones Custom**: Permite definir acciones en el formato `Etiqueta::comando` donde comando puede inyectar variables como `{repo_path}`, `{issue_url}`, `{codex_prompt}`. Por defecto, existe una acción para ejecutar un bot local de `codex` sobre el issue en cuestión.
 
 ## Diagnóstico
 
