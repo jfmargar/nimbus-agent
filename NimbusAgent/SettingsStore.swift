@@ -61,7 +61,7 @@ Tu objetivo es resolver este issue. Por favor, sigue estos pasos:
 """
 
     static let legacyDashboardCodexCommandTemplate = "codex exec --skip-git-repo-check --yolo {codex_prompt}"
-    static let dashboardCodexCommandTemplateDefault = "codex --no-alt-screen -a never -s workspace-write -C {repo_path} {codex_prompt}"
+    static let dashboardCodexCommandTemplateDefault = "codex exec -s workspace-write -C {repo_path} {codex_prompt}"
 
     var allowedUsers: String
     var agentCwd: String
@@ -291,7 +291,8 @@ Tu objetivo es resolver este issue. Por favor, sigue estos pasos:
             dashboardCodexPromptTemplate = Self.dashboardCodexPromptTemplateDefault
         }
 
-        if dashboardCodexCommandTemplate == Self.legacyDashboardCodexCommandTemplate {
+        if dashboardCodexCommandTemplate == Self.legacyDashboardCodexCommandTemplate || 
+           dashboardCodexCommandTemplate == "codex --no-alt-screen -a never -s workspace-write -C {repo_path} {codex_prompt}" {
             dashboardCodexCommandTemplate = Self.dashboardCodexCommandTemplateDefault
         }
     }
