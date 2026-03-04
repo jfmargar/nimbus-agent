@@ -64,6 +64,7 @@ function createAgentRunner(options) {
     buildSharedSessionPrompt,
     codexApprovalMode,
     codexSandboxMode,
+    clearActiveTurn,
     createCodexSdkClient = defaultCreateCodexSdkClient,
     documentDir,
     execLocal,
@@ -72,6 +73,7 @@ function createAgentRunner(options) {
     findNewestSessionDiff,
     getAgent,
     getAgentLabel,
+    getActiveTurn,
     getGlobalAgent,
     getGlobalModels,
     getGlobalThinking,
@@ -83,6 +85,7 @@ function createAgentRunner(options) {
     listSqliteCodexThreads,
     memoryRetrievalLimit,
     persistProjectOverrides,
+    persistActiveTurns,
     persistThreads,
     prefixTextWithTimestamp,
     resolveAgentProjectCwd,
@@ -90,6 +93,7 @@ function createAgentRunner(options) {
     resolveThreadId,
     shellQuote,
     setProjectForAgent,
+    setActiveTurn,
     threadTurns,
     defaultTimeZone,
     getDefaultAgentCwd,
@@ -105,8 +109,94 @@ function createAgentRunner(options) {
   const codexSdkClient = createCodexSdkClient({
     agentTimeoutMs,
     approvalMode: codexApprovalMode,
+    getLocalCodexSessionMeta,
     sandboxMode: codexSandboxMode,
   });
+
+  async function persistActiveTurnState() {
+    if (typeof persistActiveTurns === 'function') {
+      await persistActiveTurns();
+    }
+  }
+
+  async function upsertActiveTurn({
+    chatId,
+    topicId,
+    effectiveAgentId,
+    threadId,
+    startedAt,
+    status = 'running',
+    source = 'telegram_turn',
+    sessionFilePath,
+    lastObservedTimestamp,
+  }) {
+    if (typeof setActiveTurn !== 'function') return null;
+    const next = setActiveTurn(chatId, topicId, effectiveAgentId, {
+      threadId,
+      startedAt,
+      status,
+      source,
+      sessionFilePath,
+      lastObservedTimestamp,
+    });
+    if (next) {
+      await persistActiveTurnState();
+    }
+    return next;
+  }
+
+  async function clearRunningActiveTurn(chatId, topicId, effectiveAgentId) {
+    if (typeof clearActiveTurn !== 'function') return;
+    const cleared = clearActiveTurn(chatId, topicId, effectiveAgentId);
+    if (cleared) {
+      await persistActiveTurnState();
+    }
+  }
+
+  async function enrichActiveTurnSessionFilePath(
+    chatId,
+    topicId,
+    effectiveAgentId,
+    threadId,
+    startedAt
+  ) {
+    if (typeof getLocalCodexSessionMeta !== 'function') return null;
+    try {
+      if (typeof getActiveTurn === 'function') {
+        const current = getActiveTurn(chatId, topicId, effectiveAgentId);
+        if (
+          !current ||
+          current.status !== 'running' ||
+          String(current.threadId || '').trim() !== String(threadId || '').trim()
+        ) {
+          return null;
+        }
+      }
+      const meta = await getLocalCodexSessionMeta(threadId);
+      if (typeof getActiveTurn === 'function') {
+        const current = getActiveTurn(chatId, topicId, effectiveAgentId);
+        if (
+          !current ||
+          current.status !== 'running' ||
+          String(current.threadId || '').trim() !== String(threadId || '').trim()
+        ) {
+          return null;
+        }
+      }
+      return upsertActiveTurn({
+        chatId,
+        topicId,
+        effectiveAgentId,
+        threadId,
+        startedAt,
+        status: 'running',
+        source: 'telegram_turn',
+        sessionFilePath: String(meta?.filePath || '').trim(),
+      });
+    } catch {
+      return null;
+    }
+  }
 
   async function resolveLatestCodexSessionId(cwd, sessionFilter = {}) {
     if (typeof listLocalCodexSessions !== 'function') return '';
@@ -706,6 +796,21 @@ function createAgentRunner(options) {
       executionCwd,
       threads,
     });
+    await upsertActiveTurn({
+      chatId,
+      topicId,
+      effectiveAgentId,
+      threadId: candidateId,
+      startedAt: new Date(startedAt).toISOString(),
+      status: 'running',
+    });
+    enrichActiveTurnSessionFilePath(
+      chatId,
+      topicId,
+      effectiveAgentId,
+      candidateId,
+      new Date(startedAt).toISOString()
+    ).catch(() => {});
 
     if (waitForInteractiveCompletion && !backgroundInteractiveCleanup) {
       const turnState = await waitForPersistedCodexTurnCompletion({
@@ -740,6 +845,7 @@ function createAgentRunner(options) {
           };
         })
         .finally(() => {
+          clearRunningActiveTurn(chatId, topicId, effectiveAgentId).catch(() => {});
           if (pendingCodexInitializations.get(threadKey) === trackedCleanupPromise) {
             pendingCodexInitializations.delete(threadKey);
           }
@@ -766,6 +872,7 @@ function createAgentRunner(options) {
         } timeoutMs=${interactiveNewSessionTimeoutMs}`
       );
     }
+    await clearRunningActiveTurn(chatId, topicId, effectiveAgentId);
     return {
       text: buildSessionCreationReply({
         executionCwd,
@@ -807,6 +914,24 @@ function createAgentRunner(options) {
     );
 
     const startedAt = Date.now();
+    const startedAtIso = new Date(startedAt).toISOString();
+    if (normalizedThreadId) {
+      await upsertActiveTurn({
+        chatId,
+        topicId,
+        effectiveAgentId,
+        threadId: normalizedThreadId,
+        startedAt: startedAtIso,
+        status: 'running',
+      });
+      enrichActiveTurnSessionFilePath(
+        chatId,
+        topicId,
+        effectiveAgentId,
+        normalizedThreadId,
+        startedAtIso
+      ).catch(() => {});
+    }
     let result;
     try {
       result = await codexSdkClient.runTurn({
@@ -833,6 +958,9 @@ function createAgentRunner(options) {
         timeoutMs: agentTimeoutMs,
       });
     } finally {
+      if (!result?.threadId && normalizedThreadId) {
+        await clearRunningActiveTurn(chatId, topicId, effectiveAgentId);
+      }
       const elapsedMs = Date.now() - startedAt;
       console.info(
         `Agent finished chat=${chatId} topic=${topicId || 'root'} durationMs=${elapsedMs} mode=sdk`
@@ -879,13 +1007,32 @@ function createAgentRunner(options) {
       executionCwd,
       threads,
     });
-
-    return {
-      ...result,
+    await upsertActiveTurn({
+      chatId,
+      topicId,
+      effectiveAgentId,
       threadId: candidateId,
-      conversationId: String(result?.conversationId || candidateId).trim() || candidateId,
-      text: String(result?.text || '').trim(),
-    };
+      startedAt: startedAtIso,
+      status: 'running',
+    });
+    enrichActiveTurnSessionFilePath(
+      chatId,
+      topicId,
+      effectiveAgentId,
+      candidateId,
+      startedAtIso
+    ).catch(() => {});
+
+    try {
+      return {
+        ...result,
+        threadId: candidateId,
+        conversationId: String(result?.conversationId || candidateId).trim() || candidateId,
+        text: String(result?.text || '').trim(),
+      };
+    } finally {
+      await clearRunningActiveTurn(chatId, topicId, effectiveAgentId);
+    }
   }
 
   async function runAgentOneShot(prompt) {
@@ -1003,6 +1150,20 @@ function createAgentRunner(options) {
       topicId,
       effectiveAgentId
     );
+    const activeTurn =
+      typeof getActiveTurn === 'function'
+        ? getActiveTurn(chatId, topicId, effectiveAgentId)
+        : null;
+    if (
+      agent.id === 'codex' &&
+      activeTurn?.status === 'running' &&
+      activeTurn.threadId &&
+      (!threadId || String(activeTurn.threadId).trim() === String(threadId || '').trim())
+    ) {
+      throw new Error(
+        'Esta sesión aún está procesando una tarea. Usa /follow para seguirla o espera a que termine.'
+      );
+    }
     const turnCount = (threadTurns.get(threadKey) || 0) + 1;
     threadTurns.set(threadKey, turnCount);
     const shouldIncludeFileInstructions =

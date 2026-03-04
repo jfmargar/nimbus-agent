@@ -1,10 +1,12 @@
 function initializeApp(options) {
   const {
+    loadActiveTurns,
     handleCronTrigger,
     hydrateGlobalSettings,
     loadAgentOverrides,
     loadProjectOverrides,
     loadThreads,
+    setActiveTurns,
     setAgentOverrides,
     setCronDefaultChatId,
     setCronScheduler,
@@ -17,6 +19,13 @@ function initializeApp(options) {
 
   startImageCleanup();
   startDocumentCleanup();
+
+  loadActiveTurns()
+    .then((loaded) => {
+      setActiveTurns(loaded);
+      console.info(`Loaded ${loaded.size} active turn(s) from disk`);
+    })
+    .catch((err) => console.warn('Failed to load active turns:', err));
 
   loadThreads()
     .then((loaded) => {

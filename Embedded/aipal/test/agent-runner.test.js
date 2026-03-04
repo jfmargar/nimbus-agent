@@ -43,10 +43,14 @@ function createRunnerHarness(overrides = {}) {
   const projectDir =
     overrides.projectDir ||
     fs.mkdtempSync(path.join(os.tmpdir(), 'aipal-agent-runner-project-'));
+  const activeTurns = new Map();
   const threads = new Map();
   const threadTurns = new Map();
   const setProjectCalls = [];
   const sdkRequests = [];
+  const activeTurnUpdates = [];
+  let activeTurnClears = 0;
+  let persistActiveTurnsCalls = 0;
   let execCalls = 0;
   let execWithPtyCalls = 0;
   let lastExecWithPtyOptions = null;
@@ -118,6 +122,11 @@ function createRunnerHarness(overrides = {}) {
     },
     codexApprovalMode: 'never',
     codexSandboxMode: 'workspace-write',
+    clearActiveTurn: (chatId, topicId, agentId) => {
+      activeTurnClears += 1;
+      const key = `${chatId}:${topicId || 'root'}:${agentId}`;
+      return activeTurns.delete(key);
+    },
     createCodexSdkClient: () => ({
       runTurn: async (request) => {
         sdkRequests.push(request);
@@ -172,6 +181,8 @@ function createRunnerHarness(overrides = {}) {
     },
     getAgent: () => configuredAgent,
     getAgentLabel: () => configuredAgent.label,
+    getActiveTurn: (chatId, topicId, agentId) =>
+      activeTurns.get(`${chatId}:${topicId || 'root'}:${agentId}`) || null,
     getGlobalAgent: () => configuredAgent.id,
     getGlobalModels: () =>
       overrides.globalModels ||
@@ -215,6 +226,9 @@ function createRunnerHarness(overrides = {}) {
     },
     listSqliteCodexThreads: async () => [],
     memoryRetrievalLimit: 5,
+    persistActiveTurns: async () => {
+      persistActiveTurnsCalls += 1;
+    },
     persistProjectOverrides: async () => {},
     persistThreads: async () => {},
     prefixTextWithTimestamp: (text) => text,
@@ -231,6 +245,12 @@ function createRunnerHarness(overrides = {}) {
       };
     },
     shellQuote: (value) => `'${String(value)}'`,
+    setActiveTurn: (chatId, topicId, agentId, value) => {
+      const key = `${chatId}:${topicId || 'root'}:${agentId}`;
+      activeTurns.set(key, { ...value });
+      activeTurnUpdates.push({ key, value: { ...value } });
+      return { ...value };
+    },
     setProjectForAgent: (...args) => {
       setProjectCalls.push(args);
       return args[3];
@@ -245,7 +265,10 @@ function createRunnerHarness(overrides = {}) {
     projectDir,
     runner,
     sdkRequests,
+    activeTurns,
     setProjectCalls,
+    getActiveTurnClears: () => activeTurnClears,
+    getActiveTurnUpdates: () => activeTurnUpdates,
     threads,
     getBootstrapCalls: () => bootstrapCalls,
     getExecCalls: () => execCalls,
@@ -257,6 +280,7 @@ function createRunnerHarness(overrides = {}) {
     getLastBuildSharedPromptArgs: () => lastBuildSharedPromptArgs,
     getLastExecWithPtyOptions: () => lastExecWithPtyOptions,
     getRetrievalCalls: () => retrievalCalls,
+    getPersistActiveTurnsCalls: () => persistActiveTurnsCalls,
   };
 }
 
@@ -306,6 +330,55 @@ test('runAgentForChat reuses existing codex session through sdk', async () => {
   assert.equal(harness.sdkRequests[0].threadId, 'thread-existing');
   assert.equal(harness.getExecCalls(), 0);
   assert.equal(harness.getExecWithPtyCalls(), 0);
+});
+
+test('runAgentForChat blocks a new codex prompt when an active turn is still running', async () => {
+  const harness = createRunnerHarness({
+    resolveThreadId: () => ({
+      threadKey: 'chat:root:codex',
+      threadId: 'thread-existing',
+      migrated: false,
+    }),
+  });
+  harness.activeTurns.set('1:root:codex', {
+    threadId: 'thread-existing',
+    startedAt: '2026-03-03T12:00:00.000Z',
+    status: 'running',
+  });
+
+  await assert.rejects(
+    () => harness.runner.runAgentForChat(1, 'Siguiente prompt'),
+    /Usa \/follow para seguirla/
+  );
+  assert.equal(harness.sdkRequests.length, 0);
+});
+
+test('runAgentForChat registers and clears an active turn around sdk execution', async () => {
+  const harness = createRunnerHarness({
+    resolveThreadId: () => ({
+      threadKey: 'chat:root:codex',
+      threadId: 'thread-existing',
+      migrated: false,
+    }),
+    runSdkTurn: async (request) => ({
+      text: 'respuesta reanudada',
+      threadId: request.threadId,
+      conversationId: request.threadId,
+      events: [],
+    }),
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Continua');
+
+  assert.equal(text, 'respuesta reanudada');
+  assert.ok(
+    harness
+      .getActiveTurnUpdates()
+      .some((entry) => entry.value.threadId === 'thread-existing' && entry.value.status === 'running')
+  );
+  assert.ok(harness.getPersistActiveTurnsCalls() >= 2);
+  assert.equal(harness.activeTurns.size, 0);
+  assert.ok(harness.getActiveTurnClears() >= 1);
 });
 
 test('runAgentForChat fails clearly when interactive creation does not resolve a visible session id', async () => {
@@ -471,7 +544,7 @@ test('runAgentTurnForChat can attach a visible session before interactive cleanu
   await result.cleanupPromise;
 });
 
-test('runAgentForChat waits for pending session initialization before resuming the codex thread', async () => {
+test('runAgentForChat blocks follow-up prompts while the codex turn is still active', async () => {
   let releaseCleanup;
   const cleanupGate = new Promise((resolve) => {
     releaseCleanup = resolve;
@@ -509,18 +582,13 @@ test('runAgentForChat waits for pending session initialization before resuming t
   });
   assert.equal(sessionCreation.threadId, 'thread-cli');
 
-  let resumed = false;
-  const resumePromise = harness.runner.runAgentForChat(1, 'Siguiente turno').then((text) => {
-    resumed = true;
-    return text;
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(resumed, false);
+  await assert.rejects(
+    () => harness.runner.runAgentForChat(1, 'Siguiente turno'),
+    /Usa \/follow para seguirla/
+  );
 
   releaseCleanup();
-  const resumedText = await resumePromise;
-  assert.equal(resumedText, 'respuesta thread-cli');
+  await sessionCreation.cleanupPromise;
 });
 
 test('runAgentTurnForChat still detects a newly created local codex session when diff misses it', async () => {

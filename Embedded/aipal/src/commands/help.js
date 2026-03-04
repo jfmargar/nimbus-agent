@@ -25,6 +25,7 @@ function registerHelpCommands(options) {
       '/model [model_id|reset] - View/set/reset model for current agent',
       '/project [path|reset] - Set project working directory',
       '/menu - Open interactive menu for projects and sessions',
+      '/follow - Follow the active Codex session in read-only mode',
       '/projects [n] - List local Codex projects and open one',
       '/sessions [limit] - List recent local Codex sessions',
       '/session <id> - Attach a local Codex session to this topic',

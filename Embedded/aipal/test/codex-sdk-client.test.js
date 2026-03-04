@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 
 const {
   createCodexSdkClient,
@@ -82,6 +85,139 @@ test('runTurn starts a new sdk thread and normalizes streamed events', async () 
     'respuesta final',
     'Codex: finalizando respuesta...',
   ]);
+});
+
+test('runTurn preserves reasoning text for progress updates', async () => {
+  const seen = [];
+  const client = createCodexSdkClient({
+    loadCodexSdkModule: async () => ({
+      Codex: class Codex {
+        startThread() {
+          return {
+            id: 'thread-sdk',
+            runStreamed: async () => ({
+              events: (async function* events() {
+                yield { type: 'turn.started' };
+                yield {
+                  type: 'item.updated',
+                  item: {
+                    id: 'reason-1',
+                    type: 'reasoning',
+                    text: 'Voy a analizar el archivo X antes de compilar.',
+                  },
+                };
+                yield {
+                  type: 'item.completed',
+                  item: {
+                    id: 'msg-1',
+                    type: 'agent_message',
+                    text: 'respuesta final',
+                  },
+                };
+                yield {
+                  type: 'turn.completed',
+                  usage: {
+                    input_tokens: 1,
+                    cached_input_tokens: 0,
+                    output_tokens: 2,
+                  },
+                };
+              })(),
+            }),
+          };
+        }
+      },
+    }),
+  });
+
+  const result = await client.runTurn({
+    prompt: 'Hola',
+    onEvent: async (event) => {
+      seen.push(event.message || event.text || event.type);
+    },
+  });
+
+  assert.equal(result.text, 'respuesta final');
+  assert.deepEqual(seen, [
+    'Codex: enviando turno...',
+    'Voy a analizar el archivo X antes de compilar.',
+    'respuesta final',
+    'Codex: finalizando respuesta...',
+  ]);
+});
+
+test('runTurn forwards persisted session reasoning while a resumed turn is running', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-sdk-session-'));
+  const sessionFile = path.join(tempDir, 'session.jsonl');
+  await fs.writeFile(sessionFile, '', 'utf8');
+
+  try {
+    const seen = [];
+    const client = createCodexSdkClient({
+      getLocalCodexSessionMeta: async () => ({
+        filePath: sessionFile,
+      }),
+      loadCodexSdkModule: async () => ({
+        Codex: class Codex {
+          resumeThread(id) {
+            return {
+              id,
+              runStreamed: async () => ({
+                events: (async function* events() {
+                  yield { type: 'turn.started' };
+                  await fs.appendFile(
+                    sessionFile,
+                    `${JSON.stringify({
+                      timestamp: new Date().toISOString(),
+                      type: 'event_msg',
+                      payload: {
+                        type: 'agent_reasoning',
+                        text: '**Checking repository layout**\n\nI am verifying whether the domain repository already exists before I add one.',
+                      },
+                    })}\n`,
+                    'utf8'
+                  );
+                  await new Promise((resolve) => setTimeout(resolve, 250));
+                  yield {
+                    type: 'item.completed',
+                    item: {
+                      id: 'msg-1',
+                      type: 'agent_message',
+                      text: 'respuesta final',
+                    },
+                  };
+                  yield {
+                    type: 'turn.completed',
+                    usage: {
+                      input_tokens: 1,
+                      cached_input_tokens: 0,
+                      output_tokens: 2,
+                    },
+                  };
+                })(),
+              }),
+            };
+          }
+        },
+      }),
+    });
+
+    const result = await client.runTurn({
+      prompt: 'Sigue',
+      threadId: 'thread-existing',
+      onEvent: async (event) => {
+        seen.push(event.message || event.text || event.type);
+      },
+    });
+
+    assert.equal(result.text, 'respuesta final');
+    assert.match(
+      seen.join('\n'),
+      /Checking repository layout.*I am verifying whether the domain repository already exists before I add one\./
+    );
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test('runTurn resumes an existing sdk thread', async () => {

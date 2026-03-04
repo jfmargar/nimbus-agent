@@ -45,7 +45,11 @@ function registerMediaHandlers(options) {
     const progress = await beginProgress(ctx, initialText);
     return {
       onEvent: async (event) => {
-        if (!progress || event?.type === 'output_text') return;
+        if (!progress) return;
+        if (typeof progress.updateEvent === 'function') {
+          await progress.updateEvent(event);
+          return;
+        }
         const message = renderProgressEvent(event);
         if (message) {
           await progress.update(message);

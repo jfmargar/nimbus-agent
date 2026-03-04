@@ -53,6 +53,7 @@ test('config-store uses AIPAL_STATE_HOME when present', () => {
 
   assert.equal(loaded.CONFIG_DIR, '/tmp/aipal-state-home');
   assert.equal(loaded.CONFIG_PATH, '/tmp/aipal-state-home/config.json');
+  assert.equal(loaded.ACTIVE_TURNS_PATH, '/tmp/aipal-state-home/active_turns.json');
 });
 
 test('config-store falls back to XDG_CONFIG_HOME/aipal', () => {
@@ -63,6 +64,10 @@ test('config-store falls back to XDG_CONFIG_HOME/aipal', () => {
 
   assert.equal(loaded.CONFIG_DIR, '/tmp/xdg-config-home/aipal');
   assert.equal(loaded.CONFIG_PATH, '/tmp/xdg-config-home/aipal/config.json');
+  assert.equal(
+    loaded.ACTIVE_TURNS_PATH,
+    '/tmp/xdg-config-home/aipal/active_turns.json'
+  );
 });
 
 test('config-store falls back to ~/.config/aipal when no env override exists', () => {

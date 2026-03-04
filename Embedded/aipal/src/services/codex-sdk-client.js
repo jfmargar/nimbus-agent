@@ -1,6 +1,9 @@
+const fs = require('fs/promises');
+
 const DEFAULT_APPROVAL_MODE = 'never';
 const DEFAULT_SANDBOX_MODE = 'workspace-write';
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+const SESSION_FEEDBACK_POLL_MS = 150;
 
 function createCodexSdkClient(options = {}) {
   const {
@@ -8,6 +11,7 @@ function createCodexSdkClient(options = {}) {
     approvalMode = DEFAULT_APPROVAL_MODE,
     codexPathOverride,
     env,
+    getLocalCodexSessionMeta,
     loadCodexSdkModule = () => import('@openai/codex-sdk'),
     sandboxMode = DEFAULT_SANDBOX_MODE,
   } = options;
@@ -53,6 +57,10 @@ function createCodexSdkClient(options = {}) {
     let timer = null;
     const controller = new AbortController();
     let sawTurnStarted = false;
+    const recentEventKeys = [];
+    const recentEventKeySet = new Set();
+    const turnStartedAt = Date.now();
+    let stopSessionFeedbackStream = null;
 
     if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
       timer = setTimeout(() => {
@@ -72,6 +80,18 @@ function createCodexSdkClient(options = {}) {
       const thread = resolvedThreadId
         ? codex.resumeThread(resolvedThreadId, threadOptions)
         : codex.startThread(threadOptions);
+      stopSessionFeedbackStream = await ensureSessionFeedbackStream({
+        getLocalCodexSessionMeta,
+        onEvent: async (event) => {
+          if (!rememberEventKey(recentEventKeys, recentEventKeySet, event)) return;
+          events.push(event);
+          if (typeof onEvent === 'function') {
+            await onEvent(event);
+          }
+        },
+        sinceTs: turnStartedAt,
+        threadId: resolvedThreadId,
+      });
       const input = buildInput(prompt, imagePaths);
       const streamedTurn = await thread.runStreamed(input, {
         signal: controller.signal,
@@ -88,10 +108,37 @@ function createCodexSdkClient(options = {}) {
         });
         if (rawEvent?.type === 'thread.started' && rawEvent.thread_id) {
           resolvedThreadId = String(rawEvent.thread_id || '').trim();
+          stopSessionFeedbackStream = await ensureSessionFeedbackStream({
+            currentStop: stopSessionFeedbackStream,
+            getLocalCodexSessionMeta,
+            onEvent: async (event) => {
+              if (!rememberEventKey(recentEventKeys, recentEventKeySet, event)) return;
+              events.push(event);
+              if (typeof onEvent === 'function') {
+                await onEvent(event);
+              }
+            },
+            sinceTs: turnStartedAt,
+            threadId: resolvedThreadId,
+          });
         } else if (!resolvedThreadId && thread.id) {
           resolvedThreadId = String(thread.id || '').trim();
+          stopSessionFeedbackStream = await ensureSessionFeedbackStream({
+            currentStop: stopSessionFeedbackStream,
+            getLocalCodexSessionMeta,
+            onEvent: async (event) => {
+              if (!rememberEventKey(recentEventKeys, recentEventKeySet, event)) return;
+              events.push(event);
+              if (typeof onEvent === 'function') {
+                await onEvent(event);
+              }
+            },
+            sinceTs: turnStartedAt,
+            threadId: resolvedThreadId,
+          });
         }
         for (const event of normalizedEvents) {
+          if (!rememberEventKey(recentEventKeys, recentEventKeySet, event)) continue;
           events.push(event);
           if (typeof onEvent === 'function') {
             await onEvent(event);
@@ -144,12 +191,196 @@ function createCodexSdkClient(options = {}) {
       throw normalized;
     } finally {
       if (timer) clearTimeout(timer);
+      if (typeof stopSessionFeedbackStream === 'function') {
+        await stopSessionFeedbackStream();
+      }
     }
   }
 
   return {
     runTurn,
   };
+}
+
+async function ensureSessionFeedbackStream(options = {}) {
+  const {
+    currentStop,
+    getLocalCodexSessionMeta,
+    onEvent,
+    sinceTs,
+    threadId,
+  } = options;
+  if (typeof currentStop === 'function') {
+    return currentStop;
+  }
+  if (typeof getLocalCodexSessionMeta !== 'function') {
+    return currentStop || null;
+  }
+  const normalizedThreadId = String(threadId || '').trim();
+  if (!normalizedThreadId) {
+    return currentStop || null;
+  }
+  return startSessionFeedbackStream({
+    getLocalCodexSessionMeta,
+    onEvent,
+    sinceTs,
+    threadId: normalizedThreadId,
+  });
+}
+
+async function startSessionFeedbackStream(options = {}) {
+  const { getLocalCodexSessionMeta, onEvent, sinceTs, threadId } = options;
+  if (typeof getLocalCodexSessionMeta !== 'function') {
+    return null;
+  }
+
+  let meta = null;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    meta = await getLocalCodexSessionMeta(threadId);
+    if (meta?.filePath) break;
+    await delay(Math.min(SESSION_FEEDBACK_POLL_MS, 50 * (attempt + 1)));
+  }
+
+  const filePath = String(meta?.filePath || '').trim();
+  if (!filePath) {
+    return null;
+  }
+
+  let active = true;
+  let timer = null;
+  let offset = 0;
+  let buffered = '';
+  const seenLineKeys = new Set();
+
+  try {
+    const stat = await fs.stat(filePath);
+    offset = stat.size;
+  } catch {
+    offset = 0;
+  }
+
+  const poll = async () => {
+    if (!active) return;
+    try {
+      const stat = await fs.stat(filePath);
+      if (stat.size > offset) {
+        const handle = await fs.open(filePath, 'r');
+        try {
+          const length = stat.size - offset;
+          const buffer = Buffer.alloc(length);
+          const { bytesRead } = await handle.read(buffer, 0, length, offset);
+          offset = stat.size;
+          buffered += buffer.toString('utf8', 0, bytesRead);
+        } finally {
+          await handle.close();
+        }
+
+        const lines = buffered.split(/\r?\n/);
+        buffered = lines.pop() || '';
+        for (const line of lines) {
+          const normalizedLine = String(line || '').trim();
+          if (!normalizedLine) continue;
+          const entry = parseSessionEntry(normalizedLine);
+          if (!entry) continue;
+          const event = normalizePersistedSessionEvent(entry, sinceTs);
+          if (!event) continue;
+          const lineKey = `${event.type}:${event.message || event.text || ''}`;
+          if (seenLineKeys.has(lineKey)) continue;
+          seenLineKeys.add(lineKey);
+          if (typeof onEvent === 'function') {
+            await onEvent(event);
+          }
+        }
+      }
+    } catch {
+      // Ignore transient read errors while polling an active session file.
+    } finally {
+      if (active) {
+        timer = setTimeout(() => {
+          poll().catch(() => {});
+        }, SESSION_FEEDBACK_POLL_MS);
+      }
+    }
+  };
+
+  timer = setTimeout(() => {
+    poll().catch(() => {});
+  }, SESSION_FEEDBACK_POLL_MS);
+
+  return async () => {
+    active = false;
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+}
+
+function parseSessionEntry(line) {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
+}
+
+function normalizePersistedSessionEvent(entry, sinceTs) {
+  const entryTs = normalizeDateInput(entry?.timestamp);
+  if (sinceTs > 0 && entryTs > 0 && entryTs < sinceTs) {
+    return null;
+  }
+  if (String(entry?.type || '').trim().toLowerCase() !== 'event_msg') {
+    return null;
+  }
+  const payloadType = String(entry?.payload?.type || '').trim().toLowerCase();
+  if (payloadType !== 'agent_reasoning') {
+    return null;
+  }
+  const text = summarizeProgressText(entry?.payload?.text || '');
+  if (!text) {
+    return null;
+  }
+  return {
+    type: 'status',
+    phase: 'running',
+    message: text,
+    source: 'session_feedback',
+  };
+}
+
+function normalizeDateInput(value) {
+  if (!value) return 0;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function summarizeProgressText(text) {
+  const compact = String(text || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!compact) return '';
+  return compact.length > 400 ? `${compact.slice(0, 397)}...` : compact;
+}
+
+function rememberEventKey(keys, keySet, event) {
+  const key = `${event?.type || ''}|${event?.phase || ''}|${event?.tool || ''}|${
+    event?.message || event?.text || ''
+  }`;
+  if (keySet.has(key)) {
+    return false;
+  }
+  keys.push(key);
+  keySet.add(key);
+  if (keys.length > 100) {
+    const oldest = keys.shift();
+    if (oldest) keySet.delete(oldest);
+  }
+  return true;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function buildThreadOptions({
@@ -294,19 +525,21 @@ function normalizeThreadEvent(rawEvent, options = {}) {
   }
 
   if (item.type === 'reasoning') {
+    const text = String(item.text || '').trim();
     events.push({
       type: 'status',
       phase: 'running',
-      message: 'Codex: razonando...',
+      message: text || 'Codex: razonando...',
     });
     return events;
   }
 
   if (item.type === 'todo_list') {
+    const summary = summarizeTodoList(item.items);
     events.push({
       type: 'status',
       phase: 'running',
-      message: 'Codex: actualizando plan...',
+      message: summary || 'Codex: actualizando plan...',
     });
     return events;
   }
@@ -426,6 +659,19 @@ function formatChangedFiles(changes = []) {
   return changes
     .map((change) => `${change.kind || 'update'}:${change.path || '?'}`)
     .join(', ');
+}
+
+function summarizeTodoList(items = []) {
+  if (!Array.isArray(items) || items.length === 0) return '';
+  const pending = items.find((item) => item && item.completed === false);
+  const candidate = pending || items[0];
+  const text = String(candidate?.text || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+  const prefix = pending ? 'Codex plan: ' : 'Codex plan completado: ';
+  const summarized = `${prefix}${text}`;
+  return summarized.length > 200 ? `${summarized.slice(0, 197)}...` : summarized;
 }
 
 function collectAgentMessages(threadItems) {

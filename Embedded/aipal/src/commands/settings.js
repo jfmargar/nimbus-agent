@@ -25,6 +25,7 @@ const RESERVED_MENU_LABELS = new Set([
   'project',
   'sesiones',
   'reanudar última',
+  'seguir sesión activa',
   'ocultar teclado',
   'buscar',
   'anterior',
@@ -347,6 +348,7 @@ function registerSettingsCommands(options) {
     getAgent,
     getAgentLabel,
     getAgentOverride,
+    getActiveTurn,
     getGlobalAgent,
     getGlobalAgentCwd,
     getGlobalModels,
@@ -361,6 +363,7 @@ function registerSettingsCommands(options) {
     lockedAgentId,
     normalizeAgent,
     normalizeTopicId,
+    followActiveTurn,
     resolveThreadId,
     persistAgentOverrides,
     persistMemory,
@@ -414,10 +417,15 @@ function registerSettingsCommands(options) {
     return lockedAgentId !== 'opencode';
   }
 
-  function buildMainMenuReplyOptions() {
+  function buildMainMenuReplyOptions(chatId, topicId) {
     if (!shouldShowMainMenuKeyboard()) return {};
+    const effectiveAgentId = effectiveAgentFor(chatId, topicId);
+    const includeFollow =
+      effectiveAgentId === 'codex' &&
+      typeof getActiveTurn === 'function' &&
+      Boolean(getActiveTurn(chatId, topicId, effectiveAgentId)?.status === 'running');
     return {
-      reply_markup: buildMainMenuKeyboard(),
+      reply_markup: buildMainMenuKeyboard({ includeFollow }),
     };
   }
 
@@ -489,7 +497,11 @@ function registerSettingsCommands(options) {
     );
     return {
       onEvent: async (event) => {
-        if (!progress || event?.type === 'output_text') return;
+        if (!progress) return;
+        if (typeof progress.updateEvent === 'function') {
+          await progress.updateEvent(event);
+          return;
+        }
         const message = renderProgressEvent(event);
         if (message) {
           await progress.update(message);
@@ -506,7 +518,7 @@ function registerSettingsCommands(options) {
     if (chatId) {
       setMainMenuState(chatId, topicId);
     }
-    await ctx.reply('Menú principal:', buildMainMenuReplyOptions());
+    await ctx.reply('Menú principal:', buildMainMenuReplyOptions(chatId, topicId));
   }
 
   async function openProjectsMenu(ctx, options = {}) {
@@ -715,7 +727,7 @@ function registerSettingsCommands(options) {
     setMainMenuState(chatId, topicId);
     await ctx.reply(
       `Sesión reanudada: ${sessionId}`,
-      buildMainMenuReplyOptions()
+      buildMainMenuReplyOptions(chatId, topicId)
     );
   }
 
@@ -831,7 +843,7 @@ function registerSettingsCommands(options) {
     const lines = [`Sesión conectada: ${selected.id}`];
     if (cwd) lines.push(`Proyecto activo: ${projectNameFromCwd(cwd)}`);
     if (preview) lines.push(`Último mensaje: ${preview.slice(0, 240)}`);
-    await ctx.reply(lines.join('\n'), buildMainMenuReplyOptions());
+    await ctx.reply(lines.join('\n'), buildMainMenuReplyOptions(chatId, topicId));
   }
 
   async function createNewSessionFromState(ctx, state) {
@@ -886,7 +898,7 @@ function registerSettingsCommands(options) {
         : `Sesion creada y conectada en ${projectNameFromCwd(
             cwd
           )}.\nEscribe tu primera solicitud.`;
-      await ctx.reply(replyText, buildMainMenuReplyOptions());
+      await ctx.reply(replyText, buildMainMenuReplyOptions(chatId, topicId));
     } catch (err) {
       console.error(err);
       feedback.stopTyping();
@@ -1257,6 +1269,19 @@ function registerSettingsCommands(options) {
     await openMainMenu(ctx);
   });
 
+  bot.command('follow', async (ctx) => {
+    if (!canUseSensitiveCommands()) {
+      await denySensitiveCommand(ctx);
+      return;
+    }
+    try {
+      await followActiveTurn(ctx);
+    } catch (err) {
+      console.error(err);
+      await replyWithError(ctx, 'No pude seguir la sesión activa.', err);
+    }
+  });
+
   bot.hears(/^ocultar teclado$/i, async (ctx) => {
     cleanupMenuNavCache();
     const key = menuNavKeyFromIds(ctx.chat.id, getTopicId(ctx));
@@ -1304,6 +1329,19 @@ function registerSettingsCommands(options) {
     } catch (err) {
       console.error(err);
       await replyWithError(ctx, 'No pude reanudar la última sesión.', err);
+    }
+  });
+
+  bot.hears(/^seguir sesión activa$/i, async (ctx) => {
+    if (!canUseSensitiveCommands()) {
+      await denySensitiveCommand(ctx);
+      return;
+    }
+    try {
+      await followActiveTurn(ctx);
+    } catch (err) {
+      console.error(err);
+      await replyWithError(ctx, 'No pude seguir la sesión activa.', err);
     }
   });
 

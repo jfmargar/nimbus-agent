@@ -5,6 +5,8 @@ function createAppState({ defaultAgent }) {
     queues: new Map(),
     threads: new Map(),
     threadsPersist: Promise.resolve(),
+    activeTurns: new Map(),
+    activeTurnsPersist: Promise.resolve(),
     agentOverrides: new Map(),
     agentOverridesPersist: Promise.resolve(),
     projectOverrides: new Map(),
@@ -27,6 +29,13 @@ function persistThreads(state, saveThreads) {
     .catch(() => {})
     .then(() => saveThreads(state.threads));
   return state.threadsPersist;
+}
+
+function persistActiveTurns(state, saveActiveTurns) {
+  state.activeTurnsPersist = state.activeTurnsPersist
+    .catch(() => {})
+    .then(() => saveActiveTurns(state.activeTurns));
+  return state.activeTurnsPersist;
 }
 
 function persistAgentOverrides(state, saveAgentOverrides) {
@@ -63,6 +72,7 @@ function buildMemoryThreadKey(chatId, topicId, agentId) {
 module.exports = {
   buildMemoryThreadKey,
   createAppState,
+  persistActiveTurns,
   persistAgentOverrides,
   persistMemory,
   persistProjectOverrides,
