@@ -287,7 +287,18 @@ Tu objetivo es resolver este issue. Por favor, sigue estos pasos:
     }
 
     mutating func migrateDashboardCodexDefaultsIfNeeded() {
-        if dashboardCodexPromptTemplate == Self.legacyDashboardCodexPromptTemplate {
+        let previousDefaultPrompt = """
+Revisar issue #{issue_number}: {issue_title}
+
+Repositorio: {repo}
+Ruta local: {repo_path}
+Issue URL: {issue_url}
+Labels: {issue_labels}
+
+Trabaja en este checkout local y resuelve la issue. Mantén la sesión útil y legible en Codex app. Si hace falta contexto, inspecciona el código, ejecuta verificaciones razonables y deja claros los siguientes pasos.
+"""
+        if dashboardCodexPromptTemplate == Self.legacyDashboardCodexPromptTemplate ||
+           dashboardCodexPromptTemplate == previousDefaultPrompt {
             dashboardCodexPromptTemplate = Self.dashboardCodexPromptTemplateDefault
         }
 
