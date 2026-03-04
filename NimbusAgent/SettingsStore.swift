@@ -53,7 +53,7 @@ Issue URL: {issue_url}
 Labels: {issue_labels}
 
 Tu objetivo es resolver este issue. Por favor, sigue estos pasos:
-1. Crea una nueva rama (por ejemplo, `issue-{issue_number}`) usando git.
+1. Crea una nueva rama (por ejemplo, `codex/issue-{issue_number}`) usando git.
 2. Explora el código fuente para entender el problema.
 3. Elabora un plan de acción para resolver el issue.
 4. Intenta resolver el issue implementando los cambios en el código.
@@ -283,8 +283,24 @@ Labels: {issue_labels}
 
 Trabaja en este checkout local y resuelve la issue. Mantén la sesión útil y legible en Codex app. Si hace falta contexto, inspecciona el código, ejecuta verificaciones razonables y deja claros los siguientes pasos.
 """
+        let intermediateDefaultPrompt = """
+Revisar issue #{issue_number}: {issue_title}
+
+Repositorio: {repo}
+Ruta local: {repo_path}
+Issue URL: {issue_url}
+Labels: {issue_labels}
+
+Tu objetivo es resolver este issue. Por favor, sigue estos pasos:
+1. Crea una nueva rama (por ejemplo, `issue-{issue_number}`) usando git.
+2. Explora el código fuente para entender el problema.
+3. Elabora un plan de acción para resolver el issue.
+4. Intenta resolver el issue implementando los cambios en el código.
+5. Mantén tus mensajes claros para que la sesión sea útil y legible en la app de Codex.
+"""
         if dashboardCodexPromptTemplate == Self.legacyDashboardCodexPromptTemplate ||
-           dashboardCodexPromptTemplate == previousDefaultPrompt {
+           dashboardCodexPromptTemplate == previousDefaultPrompt ||
+           dashboardCodexPromptTemplate == intermediateDefaultPrompt {
             dashboardCodexPromptTemplate = Self.dashboardCodexPromptTemplateDefault
         }
 
