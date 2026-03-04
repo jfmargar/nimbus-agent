@@ -11,7 +11,7 @@ enum NimbusBot: String, CaseIterable, Identifiable {
         case .codex:
             return "Codex"
         case .gemini:
-            return "Opencode"
+            return "Gemini"
         }
     }
 
@@ -20,7 +20,7 @@ enum NimbusBot: String, CaseIterable, Identifiable {
         case .codex:
             return "codex"
         case .gemini:
-            return "opencode"
+            return "gemini"
         }
     }
 
@@ -34,6 +34,30 @@ enum NimbusBot: String, CaseIterable, Identifiable {
 }
 
 struct NimbusSettings: Codable, Equatable {
+    static let legacyDashboardCodexPromptTemplate = """
+Resuelve la incidencia #{issue_number}: {issue_title}
+
+Repositorio: {repo}
+Issue URL: {issue_url}
+Labels: {issue_labels}
+
+Trabaja en el repositorio local y deja cambios listos para revisión. Si falta contexto, inspecciona el código y documenta cualquier limitación.
+"""
+
+    static let dashboardCodexPromptTemplateDefault = """
+Revisar issue #{issue_number}: {issue_title}
+
+Repositorio: {repo}
+Ruta local: {repo_path}
+Issue URL: {issue_url}
+Labels: {issue_labels}
+
+Trabaja en este checkout local y resuelve la issue. Mantén la sesión útil y legible en Codex app. Si hace falta contexto, inspecciona el código, ejecuta verificaciones razonables y deja claros los siguientes pasos.
+"""
+
+    static let legacyDashboardCodexCommandTemplate = "codex exec --skip-git-repo-check --yolo {codex_prompt}"
+    static let dashboardCodexCommandTemplateDefault = "codex --no-alt-screen -a never -s workspace-write -C {repo_path} {codex_prompt}"
+
     var allowedUsers: String
     var agentCwd: String
     var dropPendingUpdates: Bool
@@ -150,16 +174,8 @@ struct NimbusSettings: Codable, Equatable {
         dashboardGitHubOwners: "",
         dashboardGitLabGroups: "",
         dashboardAILabels: "ai, codex, agent",
-        dashboardCodexPromptTemplate: """
-Resuelve la incidencia #{issue_number}: {issue_title}
-
-Repositorio: {repo}
-Issue URL: {issue_url}
-Labels: {issue_labels}
-
-Trabaja en el repositorio local y deja cambios listos para revisión. Si falta contexto, inspecciona el código y documenta cualquier limitación.
-""",
-        dashboardCodexCommandTemplate: "codex exec --skip-git-repo-check --yolo {codex_prompt}",
+        dashboardCodexPromptTemplate: dashboardCodexPromptTemplateDefault,
+        dashboardCodexCommandTemplate: dashboardCodexCommandTemplateDefault,
         dashboardAutomationActions: ""
     )
 
@@ -263,6 +279,16 @@ Trabaja en el repositorio local y deja cambios listos para revisión. Si falta c
         }
 
         return errors
+    }
+
+    mutating func migrateDashboardCodexDefaultsIfNeeded() {
+        if dashboardCodexPromptTemplate == Self.legacyDashboardCodexPromptTemplate {
+            dashboardCodexPromptTemplate = Self.dashboardCodexPromptTemplateDefault
+        }
+
+        if dashboardCodexCommandTemplate == Self.legacyDashboardCodexCommandTemplate {
+            dashboardCodexCommandTemplate = Self.dashboardCodexCommandTemplateDefault
+        }
     }
 }
 

@@ -21,7 +21,8 @@ struct IssueScanner {
     func scan(
         settings: NimbusSettings,
         environment: [String: String],
-        onLog: ((String) -> Void)? = nil
+        onProgress: ((String) -> Void)? = nil,
+        onResult: ((DashboardScanResult) -> Void)? = nil
     ) -> [DashboardIssue] {
         let labels = settings.dashboardIssueLabelsList
         let manualPaths = settings.dashboardLocalRepositoryPathsList()
@@ -29,23 +30,48 @@ struct IssueScanner {
             under: settings.dashboardRootDirectoryPathsList()
         )
         let repositoryPaths = Array(Set(manualPaths).union(discoveredPaths)).sorted()
-        let repositories = LocalRepositoryResolver().resolveRepositories(
-            from: repositoryPaths,
-            environment: environment,
-            onError: onLog
-        )
-        var localPathIndex: [String: String] = [:]
-        for repository in repositories {
-            let key = "\(repository.platform.rawValue):\(repository.repository)"
-            if let existing = localPathIndex[key], existing != repository.localPath {
-                onLog?("[repo-dup] \(key) -> usando \(existing) y omitiendo \(repository.localPath)")
-                continue
-            }
-            localPathIndex[key] = repository.localPath
-        }
-
         guard !labels.isEmpty else {
             return []
+        }
+
+        let resolver = LocalRepositoryResolver()
+        var repositories: [DashboardLocalRepository] = []
+        var localPathIndex: [String: String] = [:]
+        for path in repositoryPaths {
+            onProgress?(path)
+
+            let repository: DashboardLocalRepository
+            do {
+                repository = try resolver.resolveRepository(at: path, environment: environment)
+            } catch {
+                onResult?(
+                    DashboardScanResult(
+                        path: path,
+                        title: "No se pudo resolver el repositorio",
+                        detail: error.localizedDescription,
+                        status: .failure,
+                        createdAt: Date()
+                    )
+                )
+                continue
+            }
+
+            let key = "\(repository.platform.rawValue):\(repository.repository)"
+            if let existing = localPathIndex[key], existing != repository.localPath {
+                onResult?(
+                    DashboardScanResult(
+                        path: repository.localPath,
+                        title: "Repositorio duplicado",
+                        detail: "Se usa \(existing) para \(repository.repository); se omite este checkout.",
+                        status: .warning,
+                        createdAt: Date()
+                    )
+                )
+                continue
+            }
+
+            localPathIndex[key] = repository.localPath
+            repositories.append(repository)
         }
 
         var collected: [String: DashboardIssue] = [:]
@@ -59,12 +85,29 @@ struct IssueScanner {
                     localPathIndex: localPathIndex
                 )
             } catch {
-                onLog?("[scan] \(repository.repository) (\(repository.localPath)) -> \(error.localizedDescription)")
+                onResult?(
+                    DashboardScanResult(
+                        path: repository.localPath,
+                        title: repository.repository,
+                        detail: error.localizedDescription,
+                        status: .failure,
+                        createdAt: Date()
+                    )
+                )
                 continue
             }
             for issue in issues {
                 collected[issue.id] = issue
             }
+            onResult?(
+                DashboardScanResult(
+                    path: repository.localPath,
+                    title: repository.repository,
+                    detail: issues.isEmpty ? "Sin issues asignadas con las labels configuradas." : "\(issues.count) issue(s) detectadas.",
+                    status: .success,
+                    createdAt: Date()
+                )
+            )
         }
 
         return collected.values.sorted {

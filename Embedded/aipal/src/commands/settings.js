@@ -413,6 +413,30 @@ function registerSettingsCommands(options) {
     return getAgentOverride(chatId, topicId) || getGlobalAgent();
   }
 
+  function shouldUseAgentProgress(effectiveAgentId) {
+    return (
+      typeof beginProgress === 'function' &&
+      ((effectiveAgentId === 'codex' && codexProgressUpdatesEnabled) ||
+        effectiveAgentId === 'gemini' ||
+        effectiveAgentId === 'opencode')
+    );
+  }
+
+  function getProgressInitialText(effectiveAgentId, initialText) {
+    if (String(initialText || '').trim()) {
+      return String(initialText).trim();
+    }
+    if (effectiveAgentId === 'gemini') return 'Gemini: iniciando sesión...';
+    if (effectiveAgentId === 'opencode') return 'Opencode: iniciando sesión...';
+    return 'Codex: iniciando sesion...';
+  }
+
+  function getProgressFailureText(effectiveAgentId) {
+    if (effectiveAgentId === 'gemini') return 'Gemini: error durante la ejecución.';
+    if (effectiveAgentId === 'opencode') return 'Opencode: error durante la ejecución.';
+    return 'Codex: error durante la ejecucion.';
+  }
+
   function shouldShowMainMenuKeyboard() {
     return lockedAgentId !== 'opencode';
   }
@@ -475,10 +499,7 @@ function registerSettingsCommands(options) {
   }
 
   async function createExecutionFeedback(ctx, effectiveAgentId, initialText) {
-    const useProgress =
-      typeof beginProgress === 'function' &&
-      ((effectiveAgentId === 'codex' && codexProgressUpdatesEnabled) ||
-        effectiveAgentId === 'opencode');
+    const useProgress = shouldUseAgentProgress(effectiveAgentId);
     if (!useProgress) {
       return {
         onEvent: undefined,
@@ -488,12 +509,7 @@ function registerSettingsCommands(options) {
     }
     const progress = await beginProgress(
       ctx,
-      String(
-        initialText ||
-          (effectiveAgentId === 'opencode'
-            ? 'Opencode: iniciando sesión...'
-            : 'Codex: iniciando sesion...')
-      ).trim()
+      getProgressInitialText(effectiveAgentId, initialText)
     );
     return {
       onEvent: async (event) => {
@@ -1025,7 +1041,7 @@ function registerSettingsCommands(options) {
     }
 
     if (!isKnownAgent(value)) {
-      ctx.reply('Unknown agent. Use /agent codex|claude|gemini|opencode.');
+      ctx.reply('Unknown agent. Use /agent gemini|codex|claude|opencode.');
       return;
     }
 
@@ -1686,7 +1702,7 @@ function registerSettingsCommands(options) {
         console.error(err);
         feedback.stopTyping();
         if (feedback.progress) {
-          await feedback.progress.fail('Codex: error durante la ejecucion.');
+          await feedback.progress.fail(getProgressFailureText(effectiveAgentId));
         }
         menuNavCache.set(key, restoreState);
         await replyWithError(ctx, 'No pude crear la sesión de Codex ni enviar tu primera solicitud.', err);

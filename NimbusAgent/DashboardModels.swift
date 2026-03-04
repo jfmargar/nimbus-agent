@@ -86,6 +86,43 @@ enum DashboardActionStatus: Equatable {
     }
 }
 
+enum DashboardScanResultStatus: Equatable {
+    case success
+    case warning
+    case failure
+
+    var label: String {
+        switch self {
+        case .success:
+            return "OK"
+        case .warning:
+            return "Aviso"
+        case .failure:
+            return "Error"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .success:
+            return "checkmark.circle.fill"
+        case .warning:
+            return "exclamationmark.circle.fill"
+        case .failure:
+            return "xmark.circle.fill"
+        }
+    }
+}
+
+struct DashboardScanResult: Identifiable, Equatable {
+    let id = UUID()
+    let path: String
+    let title: String
+    let detail: String
+    let status: DashboardScanResultStatus
+    let createdAt: Date
+}
+
 enum DashboardConfigurationError: LocalizedError {
     case invalidScanTargetLine(String)
     case invalidAutomationActionLine(String)

@@ -19,6 +19,8 @@ final class NimbusAppModel: ObservableObject {
     @Published var dashboardStatusMessage: String = "Configura targets y refresca para empezar."
     @Published var dashboardIsRefreshing: Bool = false
     @Published var dashboardLastRefresh: Date?
+    @Published var dashboardScanCurrentPath: String = ""
+    @Published var dashboardScanResults: [DashboardScanResult] = []
     @Published var dashboardLogs: [String] = []
     @Published var dashboardLocalRepositories: [DashboardLocalRepository] = []
     @Published private var dashboardActionStatuses: [String: DashboardActionStatus] = [:]
@@ -34,7 +36,9 @@ final class NimbusAppModel: ObservableObject {
     private let maxLogLines = 500
 
     init() {
-        self.settings = settingsStore.load()
+        var initialSettings = settingsStore.load()
+        initialSettings.migrateDashboardCodexDefaultsIfNeeded()
+        self.settings = initialSettings
         self.botStatuses = Dictionary(uniqueKeysWithValues: NimbusBot.allCases.map { ($0, BotStatus()) })
         self.processManagers = Dictionary(uniqueKeysWithValues: NimbusBot.allCases.map { ($0, AgentProcessManager()) })
 
@@ -61,6 +65,8 @@ final class NimbusAppModel: ObservableObject {
                 }
             }
         }
+
+        persistDashboardSettingsIfPossible()
     }
 
     func saveConfiguration() {
@@ -328,25 +334,44 @@ final class NimbusAppModel: ObservableObject {
         let currentSettings = settings
         let scanner = issueScanner
         dashboardIsRefreshing = true
+        dashboardScanCurrentPath = ""
+        dashboardScanResults = []
         dashboardStatusMessage = "Escaneando issues..."
         appendDashboardLog("Iniciando escaneo de issues con labels: \(currentSettings.dashboardIssueLabelsList.joined(separator: ", "))")
 
         DispatchQueue.global(qos: .userInitiated).async {
             let environment = EnvAssembler.buildDashboardEnvironment(settings: currentSettings)
-            let issues = scanner.scan(settings: currentSettings, environment: environment) { message in
-                Task { @MainActor in
-                    self.appendDashboardLog(message)
+            let issues = scanner.scan(
+                settings: currentSettings,
+                environment: environment,
+                onProgress: { path in
+                    Task { @MainActor in
+                        self.dashboardScanCurrentPath = path
+                    }
+                },
+                onResult: { result in
+                    Task { @MainActor in
+                        self.appendDashboardScanResult(result)
+                    }
                 }
-            }
+            )
             Task { @MainActor in
                 self.dashboardIssues = issues
                 self.dashboardLastRefresh = Date()
                 self.dashboardIsRefreshing = false
+                self.dashboardScanCurrentPath = ""
                 self.dashboardStatusMessage = issues.isEmpty
                     ? "No se encontraron issues abiertos con las etiquetas configuradas."
                     : "Se encontraron \(issues.count) issue(s)."
                 self.appendDashboardLog("Escaneo completado. \(issues.count) issue(s) detectados.")
             }
+        }
+    }
+
+    private func appendDashboardScanResult(_ result: DashboardScanResult) {
+        dashboardScanResults.insert(result, at: 0)
+        if dashboardScanResults.count > maxLogLines {
+            dashboardScanResults.removeLast(dashboardScanResults.count - maxLogLines)
         }
     }
 

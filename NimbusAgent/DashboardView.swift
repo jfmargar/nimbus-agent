@@ -12,7 +12,7 @@ struct DashboardView: View {
 
             HStack(alignment: .top, spacing: 16) {
                 issuesPane
-                logsPane
+                scanPane
             }
         }
         .padding(16)
@@ -68,27 +68,58 @@ struct DashboardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var logsPane: some View {
+    private var scanPane: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Ejecuciones")
+                Text("Escaneo")
                     .font(.headline)
                 Spacer()
-                Button("Copiar logs") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(model.dashboardLogs.joined(separator: "\n"), forType: .string)
-                }
             }
 
-            ScrollView {
-                Text(model.dashboardLogs.joined(separator: "\n"))
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .padding(10)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    if model.dashboardIsRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "checkmark.circle")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.dashboardIsRefreshing ? "Comprobando repositorios" : "Escaneo en reposo")
+                            .font(.subheadline.weight(.medium))
+                        if model.dashboardIsRefreshing, !model.dashboardScanCurrentPath.isEmpty {
+                            Text(model.dashboardScanCurrentPath)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .lineLimit(2)
+                        } else {
+                            Text("Nimbus irá mostrando aquí el directorio actual y el resultado de cada repo.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
+            .padding(12)
             .background(Color.secondary.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            if model.dashboardScanResults.isEmpty {
+                ContentUnavailableView(
+                    "Sin actividad reciente",
+                    systemImage: "clock",
+                    description: Text("Los resultados del escaneo aparecerán aquí.")
+                )
+            } else {
+                List(model.dashboardScanResults) { result in
+                    scanResultRow(result)
+                        .padding(.vertical, 4)
+                }
+                .listStyle(.inset)
+            }
         }
         .frame(width: 420)
         .frame(maxHeight: .infinity)
@@ -205,6 +236,35 @@ struct DashboardView: View {
             }
     }
 
+    private func scanResultRow(_ result: DashboardScanResult) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: result.status.iconName)
+                .foregroundStyle(scanResultColor(result.status))
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text(result.title)
+                        .font(.subheadline.weight(.medium))
+                    Spacer()
+                    Text(relativeDate(result.createdAt))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(result.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Text(result.path)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
     private var summaryLine: String {
         let targetCount = model.dashboardLocalRepositories.count
         let labels = model.settings.dashboardIssueLabelsList
@@ -216,5 +276,16 @@ struct DashboardView: View {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         return formatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    private func scanResultColor(_ status: DashboardScanResultStatus) -> Color {
+        switch status {
+        case .success:
+            return .green
+        case .warning:
+            return .orange
+        case .failure:
+            return .red
+        }
     }
 }

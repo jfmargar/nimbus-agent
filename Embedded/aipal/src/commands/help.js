@@ -20,7 +20,7 @@ function registerHelpCommands(options) {
       '/start - Hello world',
       lockedAgentLabel
         ? `/agent - ${lockedAgentLabel}`
-        : '/agent <name> - Switch agent (codex, claude, gemini, opencode)',
+        : '/agent <name> - Switch agent (gemini, codex, claude, opencode)',
       '/thinking <level> - Set reasoning effort',
       '/model [model_id|reset] - View/set/reset model for current agent',
       '/project [path|reset] - Set project working directory',

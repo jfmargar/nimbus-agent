@@ -148,3 +148,51 @@ test('help reflects locked agent mode', async () => {
 
   assert.match(replies[0], /\/agent - Locked to gemini/);
 });
+
+test('help lists gemini before codex and opencode for unlocked bots', async () => {
+  const bot = createFakeBot();
+  registerHelpCommands({
+    allowedUsers: new Set(),
+    bot,
+    enqueue: () => {},
+    extractCommandValue: () => '',
+    lockedAgentId: '',
+    markdownToTelegramHtml: (value) => value,
+    replyWithError: async () => {},
+    runAgentOneShot: async () => '',
+    scriptManager: { listScripts: async () => [] },
+    startTyping: () => () => {},
+  });
+
+  const replies = [];
+  await bot.commands.get('help')({
+    reply: async (message) => {
+      replies.push(message);
+    },
+  });
+
+  assert.match(
+    replies[0],
+    /\/agent <name> - Switch agent \(gemini, codex, claude, opencode\)/
+  );
+});
+
+test('agent command suggests gemini first for invalid agents', async () => {
+  const bot = createFakeBot();
+  registerSettingsCommands(createSettingsOptions(bot, {
+    isKnownAgent: () => false,
+  }));
+
+  const replies = [];
+  await bot.commands.get('agent')({
+    chat: { id: 1 },
+    message: { text: '/agent invalid' },
+    reply: async (message) => {
+      replies.push(message);
+    },
+  });
+
+  assert.deepEqual(replies, [
+    'Unknown agent. Use /agent gemini|codex|claude|opencode.',
+  ]);
+});

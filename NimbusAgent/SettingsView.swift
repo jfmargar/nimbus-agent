@@ -33,7 +33,7 @@ struct SettingsView: View {
                 Form {
                     Section("Bots") {
                         SecureField("Telegram Bot Token (Codex)", text: $model.codexToken)
-                        SecureField("Telegram Bot Token (Opencode)", text: $model.geminiToken)
+                        SecureField("Telegram Bot Token (Gemini)", text: $model.geminiToken)
                     }
 
                     Section("Compartido") {

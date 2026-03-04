@@ -18,7 +18,13 @@ final class PreflightService {
         let effectiveEnv = EnvAssembler.build(settings: settings, token: token, bot: bot)
         let effectiveCodexHome = effectiveEnv["CODEX_HOME"] ?? EnvAssembler.effectiveCodexHome()
         let defaultCodexHome = "\(NSHomeDirectory())/.codex"
-        let requiredCommand = bot == .codex ? "codex" : "opencode"
+        let requiredCommand: String
+        switch bot {
+        case .codex:
+            requiredCommand = "codex"
+        case .gemini:
+            requiredCommand = "gemini"
+        }
 
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedToken.isEmpty {
