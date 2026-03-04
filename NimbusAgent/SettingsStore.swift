@@ -47,6 +47,15 @@ struct NimbusSettings: Codable, Equatable {
     var codexApprovalMode: String
     var codexSandboxMode: String
     var codexProgressUpdates: Bool
+    var dashboardRootDirectories: String
+    var dashboardLocalRepositories: String
+    var dashboardScanTargets: String
+    var dashboardGitHubOwners: String
+    var dashboardGitLabGroups: String
+    var dashboardAILabels: String
+    var dashboardCodexPromptTemplate: String
+    var dashboardCodexCommandTemplate: String
+    var dashboardAutomationActions: String
 
     enum CodingKeys: String, CodingKey {
         case allowedUsers
@@ -62,6 +71,15 @@ struct NimbusSettings: Codable, Equatable {
         case codexApprovalMode
         case codexSandboxMode
         case codexProgressUpdates
+        case dashboardRootDirectories
+        case dashboardLocalRepositories
+        case dashboardScanTargets
+        case dashboardGitHubOwners
+        case dashboardGitLabGroups
+        case dashboardAILabels
+        case dashboardCodexPromptTemplate
+        case dashboardCodexCommandTemplate
+        case dashboardAutomationActions
     }
 
     init(
@@ -77,7 +95,16 @@ struct NimbusSettings: Codable, Equatable {
         shutdownDrainTimeoutMs: Int,
         codexApprovalMode: String,
         codexSandboxMode: String,
-        codexProgressUpdates: Bool
+        codexProgressUpdates: Bool,
+        dashboardRootDirectories: String,
+        dashboardLocalRepositories: String,
+        dashboardScanTargets: String,
+        dashboardGitHubOwners: String,
+        dashboardGitLabGroups: String,
+        dashboardAILabels: String,
+        dashboardCodexPromptTemplate: String,
+        dashboardCodexCommandTemplate: String,
+        dashboardAutomationActions: String
     ) {
         self.allowedUsers = allowedUsers
         self.agentCwd = agentCwd
@@ -92,6 +119,15 @@ struct NimbusSettings: Codable, Equatable {
         self.codexApprovalMode = codexApprovalMode
         self.codexSandboxMode = codexSandboxMode
         self.codexProgressUpdates = codexProgressUpdates
+        self.dashboardRootDirectories = dashboardRootDirectories
+        self.dashboardLocalRepositories = dashboardLocalRepositories
+        self.dashboardScanTargets = dashboardScanTargets
+        self.dashboardGitHubOwners = dashboardGitHubOwners
+        self.dashboardGitLabGroups = dashboardGitLabGroups
+        self.dashboardAILabels = dashboardAILabels
+        self.dashboardCodexPromptTemplate = dashboardCodexPromptTemplate
+        self.dashboardCodexCommandTemplate = dashboardCodexCommandTemplate
+        self.dashboardAutomationActions = dashboardAutomationActions
     }
 
     static let `default` = NimbusSettings(
@@ -107,7 +143,24 @@ struct NimbusSettings: Codable, Equatable {
         shutdownDrainTimeoutMs: 120000,
         codexApprovalMode: "never",
         codexSandboxMode: "workspace-write",
-        codexProgressUpdates: true
+        codexProgressUpdates: true,
+        dashboardRootDirectories: "",
+        dashboardLocalRepositories: "",
+        dashboardScanTargets: "",
+        dashboardGitHubOwners: "",
+        dashboardGitLabGroups: "",
+        dashboardAILabels: "ai, codex, agent",
+        dashboardCodexPromptTemplate: """
+Resuelve la incidencia #{issue_number}: {issue_title}
+
+Repositorio: {repo}
+Issue URL: {issue_url}
+Labels: {issue_labels}
+
+Trabaja en el repositorio local y deja cambios listos para revisión. Si falta contexto, inspecciona el código y documenta cualquier limitación.
+""",
+        dashboardCodexCommandTemplate: "codex exec --skip-git-repo-check --yolo {codex_prompt}",
+        dashboardAutomationActions: ""
     )
 
     init(from decoder: Decoder) throws {
@@ -126,6 +179,15 @@ struct NimbusSettings: Codable, Equatable {
         codexApprovalMode = try container.decodeIfPresent(String.self, forKey: .codexApprovalMode) ?? defaults.codexApprovalMode
         codexSandboxMode = try container.decodeIfPresent(String.self, forKey: .codexSandboxMode) ?? defaults.codexSandboxMode
         codexProgressUpdates = try container.decodeIfPresent(Bool.self, forKey: .codexProgressUpdates) ?? defaults.codexProgressUpdates
+        dashboardRootDirectories = try container.decodeIfPresent(String.self, forKey: .dashboardRootDirectories) ?? defaults.dashboardRootDirectories
+        dashboardLocalRepositories = try container.decodeIfPresent(String.self, forKey: .dashboardLocalRepositories) ?? defaults.dashboardLocalRepositories
+        dashboardScanTargets = try container.decodeIfPresent(String.self, forKey: .dashboardScanTargets) ?? defaults.dashboardScanTargets
+        dashboardGitHubOwners = try container.decodeIfPresent(String.self, forKey: .dashboardGitHubOwners) ?? defaults.dashboardGitHubOwners
+        dashboardGitLabGroups = try container.decodeIfPresent(String.self, forKey: .dashboardGitLabGroups) ?? defaults.dashboardGitLabGroups
+        dashboardAILabels = try container.decodeIfPresent(String.self, forKey: .dashboardAILabels) ?? defaults.dashboardAILabels
+        dashboardCodexPromptTemplate = try container.decodeIfPresent(String.self, forKey: .dashboardCodexPromptTemplate) ?? defaults.dashboardCodexPromptTemplate
+        dashboardCodexCommandTemplate = try container.decodeIfPresent(String.self, forKey: .dashboardCodexCommandTemplate) ?? defaults.dashboardCodexCommandTemplate
+        dashboardAutomationActions = try container.decodeIfPresent(String.self, forKey: .dashboardAutomationActions) ?? defaults.dashboardAutomationActions
     }
 
     func validationErrors() -> [String] {
@@ -155,6 +217,49 @@ struct NimbusSettings: Codable, Equatable {
         let validSandboxModes = ["read-only", "workspace-write", "danger-full-access"]
         if !validSandboxModes.contains(codexSandboxMode.trimmingCharacters(in: .whitespacesAndNewlines)) {
             errors.append("AIPAL_CODEX_SANDBOX_MODE no es válido.")
+        }
+
+        if dashboardCodexPromptTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            errors.append("La plantilla del prompt de Codex para el dashboard no puede estar vacía.")
+        }
+
+        if dashboardCodexCommandTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            errors.append("La plantilla de comando de Codex para el dashboard no puede estar vacía.")
+        }
+
+        for path in dashboardRootDirectoryPathsList() {
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+            if !exists || !isDirectory.boolValue {
+                errors.append("La carpeta raíz del dashboard no existe o no es carpeta: \(path)")
+            }
+        }
+
+        for path in dashboardLocalRepositoryPathsList() {
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+            if !exists || !isDirectory.boolValue {
+                errors.append("El repo local del dashboard no existe o no es carpeta: \(path)")
+            }
+        }
+
+        do {
+            let targets = try dashboardScanTargetsList()
+            for target in targets {
+                var isDirectory: ObjCBool = false
+                let exists = FileManager.default.fileExists(atPath: target.localPath, isDirectory: &isDirectory)
+                if !exists || !isDirectory.boolValue {
+                    errors.append("El path local del dashboard no existe o no es carpeta: \(target.localPath)")
+                }
+            }
+        } catch {
+            errors.append(error.localizedDescription)
+        }
+
+        do {
+            _ = try dashboardAutomationActionsList()
+        } catch {
+            errors.append(error.localizedDescription)
         }
 
         return errors
@@ -283,6 +388,32 @@ struct EnvAssembler {
         env["AIPAL_CODEX_APPROVAL_MODE"] = settings.codexApprovalMode
         env["AIPAL_CODEX_SANDBOX_MODE"] = settings.codexSandboxMode
         env["AIPAL_CODEX_PROGRESS_UPDATES"] = settings.codexProgressUpdates ? "true" : "false"
+
+        return env
+    }
+
+    static func buildDashboardEnvironment(settings: NimbusSettings) -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        env.merge(ShellResolver.interactiveShellEnvironment(variableNames: geminiShellVariables + ["GH_TOKEN", "GITHUB_TOKEN"])) { _, new in new }
+
+        if env["PATH"]?.isEmpty ?? true {
+            env["PATH"] = ShellResolver.mergedPathValue()
+        } else {
+            env["PATH"] = ShellResolver.mergedPathValue()
+        }
+
+        if env["HOME"]?.isEmpty ?? true {
+            env["HOME"] = NSHomeDirectory()
+        }
+
+        env["CODEX_HOME"] = effectiveCodexHome(from: env)
+
+        let trimmedCwd = settings.agentCwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedCwd.isEmpty {
+            env.removeValue(forKey: "AIPAL_AGENT_CWD")
+        } else {
+            env["AIPAL_AGENT_CWD"] = trimmedCwd
+        }
 
         return env
     }

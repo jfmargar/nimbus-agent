@@ -15,11 +15,21 @@ final class NimbusAppModel: ObservableObject {
     @Published var codexToken: String
     @Published var geminiToken: String
     @Published var settingsStatusMessage: String = ""
+    @Published var dashboardIssues: [DashboardIssue] = []
+    @Published var dashboardStatusMessage: String = "Configura targets y refresca para empezar."
+    @Published var dashboardIsRefreshing: Bool = false
+    @Published var dashboardLastRefresh: Date?
+    @Published var dashboardLogs: [String] = []
+    @Published var dashboardLocalRepositories: [DashboardLocalRepository] = []
+    @Published private var dashboardActionStatuses: [String: DashboardActionStatus] = [:]
     @Published private var botStatuses: [NimbusBot: BotStatus]
 
     private let settingsStore = SettingsStore()
     private let secretsStore = SecretsStore()
     private let preflightService = PreflightService()
+    private let issueScanner = IssueScanner()
+    private let localRepositoryResolver = LocalRepositoryResolver()
+    private let localRepositoryDiscovery = LocalRepositoryDiscovery()
     private let processManagers: [NimbusBot: AgentProcessManager]
     private let maxLogLines = 500
 
@@ -36,6 +46,7 @@ final class NimbusAppModel: ObservableObject {
 
         self.codexToken = secretsStore.readTelegramToken(for: .codex)
         self.geminiToken = secretsStore.readTelegramToken(for: .gemini)
+        refreshDashboardRepositoryCatalog()
 
         for bot in NimbusBot.allCases {
             processManagers[bot]?.onOutput = { [weak self] chunk in
@@ -63,6 +74,7 @@ final class NimbusAppModel: ObservableObject {
             try settingsStore.save(settings)
             try secretsStore.saveTelegramToken(codexToken, for: .codex)
             try secretsStore.saveTelegramToken(geminiToken, for: .gemini)
+            refreshDashboardRepositoryCatalog()
             settingsStatusMessage = "Configuración guardada."
         } catch {
             settingsStatusMessage = "No se pudo guardar la configuración: \(error.localizedDescription)"
@@ -79,6 +91,74 @@ final class NimbusAppModel: ObservableObject {
         let response = panel.runModal()
         guard response == .OK, let url = panel.url else { return }
         settings.agentCwd = url.path
+    }
+
+    func pickDashboardRepositories() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Añadir repos"
+
+        let response = panel.runModal()
+        guard response == .OK else { return }
+
+        let existing = Set(settings.dashboardLocalRepositoryPathsList())
+        let additions = panel.urls.map(\.path)
+        let merged = Array(existing.union(additions)).sorted()
+        settings.dashboardLocalRepositories = merged.joined(separator: "\n")
+        refreshDashboardRepositoryCatalog()
+        persistDashboardSettingsIfPossible()
+    }
+
+    func pickDashboardRootDirectories() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Añadir carpetas raíz"
+
+        let response = panel.runModal()
+        guard response == .OK else { return }
+
+        let existing = Set(settings.dashboardRootDirectoryPathsList())
+        let additions = panel.urls.map(\.path)
+        let merged = Array(existing.union(additions)).sorted()
+        settings.dashboardRootDirectories = merged.joined(separator: "\n")
+        refreshDashboardRepositoryCatalog()
+        persistDashboardSettingsIfPossible()
+    }
+
+    func removeDashboardRepository(_ repository: DashboardLocalRepository) {
+        let filtered = settings.dashboardLocalRepositoryPathsList().filter { $0 != repository.localPath }
+        settings.dashboardLocalRepositories = filtered.joined(separator: "\n")
+        refreshDashboardRepositoryCatalog()
+        persistDashboardSettingsIfPossible()
+    }
+
+    func removeDashboardRootDirectory(_ path: String) {
+        let filtered = settings.dashboardRootDirectoryPathsList().filter { $0 != path }
+        settings.dashboardRootDirectories = filtered.joined(separator: "\n")
+        refreshDashboardRepositoryCatalog()
+        persistDashboardSettingsIfPossible()
+    }
+
+    func refreshDashboardRepositoryCatalog() {
+        let environment = EnvAssembler.buildDashboardEnvironment(settings: settings)
+        let manualPaths = settings.dashboardLocalRepositoryPathsList()
+        let discoveredPaths = localRepositoryDiscovery.discoverRepositoryPaths(
+            under: settings.dashboardRootDirectoryPathsList()
+        )
+        let paths = Array(Set(manualPaths).union(discoveredPaths)).sorted()
+
+        dashboardLocalRepositories = localRepositoryResolver.resolveRepositories(
+            from: paths,
+            environment: environment
+        ) { message in
+            Task { @MainActor in
+                self.appendDashboardLog(message)
+            }
+        }
     }
 
     func startBot(_ bot: NimbusBot) {
@@ -236,6 +316,65 @@ final class NimbusAppModel: ObservableObject {
         logs(for: bot).last ?? "Sin actividad reciente."
     }
 
+    func dashboardActionStatus(for issue: DashboardIssue, actionID: String) -> DashboardActionStatus {
+        dashboardActionStatuses[dashboardActionKey(issue: issue, actionID: actionID)] ?? .idle
+    }
+
+    func dashboardAutomationActions() -> [DashboardAutomationAction] {
+        (try? settings.dashboardAutomationActionsList()) ?? []
+    }
+
+    func refreshDashboardIssues() {
+        let currentSettings = settings
+        let scanner = issueScanner
+        dashboardIsRefreshing = true
+        dashboardStatusMessage = "Escaneando issues..."
+        appendDashboardLog("Iniciando escaneo de issues con labels: \(currentSettings.dashboardIssueLabelsList.joined(separator: ", "))")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let environment = EnvAssembler.buildDashboardEnvironment(settings: currentSettings)
+            let issues = scanner.scan(settings: currentSettings, environment: environment) { message in
+                Task { @MainActor in
+                    self.appendDashboardLog(message)
+                }
+            }
+            Task { @MainActor in
+                self.dashboardIssues = issues
+                self.dashboardLastRefresh = Date()
+                self.dashboardIsRefreshing = false
+                self.dashboardStatusMessage = issues.isEmpty
+                    ? "No se encontraron issues abiertos con las etiquetas configuradas."
+                    : "Se encontraron \(issues.count) issue(s)."
+                self.appendDashboardLog("Escaneo completado. \(issues.count) issue(s) detectados.")
+            }
+        }
+    }
+
+    func runCodex(for issue: DashboardIssue) {
+        let prompt = renderTemplate(
+            settings.dashboardCodexPromptTemplate,
+            issue: issue,
+            actionLabel: "Codex"
+        )
+        let quotedPrompt = shellQuoted(prompt)
+        let command = renderTemplate(
+            settings.dashboardCodexCommandTemplate,
+            issue: issue,
+            actionLabel: "Codex",
+            extraValues: ["codex_prompt": quotedPrompt]
+        )
+        runDashboardCommand(command, for: issue, actionID: "codex", actionLabel: "Codex")
+    }
+
+    func runAutomation(_ action: DashboardAutomationAction, for issue: DashboardIssue) {
+        let command = renderTemplate(
+            action.commandTemplate,
+            issue: issue,
+            actionLabel: action.label
+        )
+        runDashboardCommand(command, for: issue, actionID: action.id, actionLabel: action.label)
+    }
+
     func statusColor(for bot: NimbusBot) -> Color {
         switch runState(for: bot) {
         case .idle:
@@ -378,6 +517,113 @@ final class NimbusAppModel: ObservableObject {
             if status.logs.count > maxLogLines {
                 status.logs.removeFirst(status.logs.count - maxLogLines)
             }
+        }
+    }
+
+    private func runDashboardCommand(
+        _ command: String,
+        for issue: DashboardIssue,
+        actionID: String,
+        actionLabel: String
+    ) {
+        let key = dashboardActionKey(issue: issue, actionID: actionID)
+        guard let localPath = issue.localPath, !localPath.isEmpty else {
+            dashboardActionStatuses[key] = .failed("No hay checkout local resuelto para este repo.")
+            appendDashboardLog("[\(issue.repository)#\(issue.number)] \(actionLabel) omitido: no hay checkout local.")
+            return
+        }
+        dashboardActionStatuses[key] = .running
+        appendDashboardLog("[\(issue.repository)#\(issue.number)] \(actionLabel) -> \(command)")
+
+        let currentSettings = settings
+        DispatchQueue.global(qos: .userInitiated).async {
+            let environment = EnvAssembler.buildDashboardEnvironment(settings: currentSettings)
+            let currentDirectoryURL = URL(fileURLWithPath: localPath, isDirectory: true)
+
+            do {
+                let result = try CommandExecutor.runShellCommand(
+                    command,
+                    environment: environment,
+                    currentDirectoryURL: currentDirectoryURL
+                ) { chunk in
+                    Task { @MainActor in
+                        self.appendDashboardLog("[\(issue.repository)#\(issue.number)] \(chunk)")
+                    }
+                }
+
+                Task { @MainActor in
+                    if result.terminationStatus == 0 {
+                        self.dashboardActionStatuses[key] = .succeeded
+                        self.appendDashboardLog("[\(issue.repository)#\(issue.number)] \(actionLabel) completado.")
+                    } else {
+                        let message = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                        self.dashboardActionStatuses[key] = .failed(message.isEmpty ? "exit \(result.terminationStatus)" : message)
+                        self.appendDashboardLog("[\(issue.repository)#\(issue.number)] \(actionLabel) falló con exit \(result.terminationStatus).")
+                    }
+                }
+            } catch {
+                Task { @MainActor in
+                    self.dashboardActionStatuses[key] = .failed(error.localizedDescription)
+                    self.appendDashboardLog("[\(issue.repository)#\(issue.number)] \(actionLabel) no pudo arrancar: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func appendDashboardLog(_ chunk: String) {
+        let lines = chunk
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .map { line in "[\(Self.timestamp())] \(line)" }
+
+        guard !lines.isEmpty else { return }
+
+        dashboardLogs.append(contentsOf: lines)
+        if dashboardLogs.count > maxLogLines {
+            dashboardLogs.removeFirst(dashboardLogs.count - maxLogLines)
+        }
+    }
+
+    private func dashboardActionKey(issue: DashboardIssue, actionID: String) -> String {
+        "\(issue.id)::\(actionID)"
+    }
+
+    private func renderTemplate(
+        _ template: String,
+        issue: DashboardIssue,
+        actionLabel: String,
+        extraValues: [String: String] = [:]
+    ) -> String {
+        var values: [String: String] = [
+            "platform": issue.platform.rawValue,
+            "repo": issue.repository,
+            "repo_path": issue.localPath ?? "",
+            "issue_number": String(issue.number),
+            "issue_title": issue.title,
+            "issue_url": issue.url,
+            "issue_labels": issue.labels.joined(separator: ", "),
+            "action_label": actionLabel
+        ]
+        values.merge(extraValues) { _, new in new }
+
+        var rendered = template
+        for key in values.keys.sorted(by: { $0.count > $1.count }) {
+            rendered = rendered.replacingOccurrences(of: "{\(key)}", with: values[key] ?? "")
+        }
+        return rendered
+    }
+
+    private func shellQuoted(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    private func persistDashboardSettingsIfPossible() {
+        do {
+            try settingsStore.save(settings)
+            settingsStatusMessage = "Configuración guardada."
+        } catch {
+            settingsStatusMessage = "No se pudo guardar la configuración: \(error.localizedDescription)"
+            appendDashboardLog("No se pudo persistir la configuración del dashboard: \(error.localizedDescription)")
         }
     }
 

@@ -1,8 +1,15 @@
 import SwiftUI
+import AppKit
 
 struct NimbusMenuView: View {
     @ObservedObject var model: NimbusAppModel
     @Environment(\.openWindow) private var openWindow
+
+    private func bringAppToFrontAndOpenWindow(id: String) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: id)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -70,11 +77,15 @@ struct NimbusMenuView: View {
             }
 
             Button("Configuración") {
-                openWindow(id: "settings")
+                bringAppToFrontAndOpenWindow(id: "settings")
+            }
+
+            Button("Dashboard") {
+                bringAppToFrontAndOpenWindow(id: "dashboard")
             }
 
             Button("Ver diagnóstico") {
-                openWindow(id: "diagnostics")
+                bringAppToFrontAndOpenWindow(id: "diagnostics")
             }
 
             Divider()
@@ -100,11 +111,28 @@ struct NimbusAgentApp: App {
 
         Window("Configuración", id: "settings") {
             SettingsView(model: model)
+                .onAppear {
+                    NSApp.setActivationPolicy(.regular)
+                    NSApp.activate(ignoringOtherApps: true)
+                }
         }
         .defaultSize(width: 700, height: 560)
 
+        Window("Dashboard", id: "dashboard") {
+            DashboardView(model: model)
+                .onAppear {
+                    NSApp.setActivationPolicy(.regular)
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+        }
+        .defaultSize(width: 1180, height: 720)
+
         Window("Diagnóstico", id: "diagnostics") {
             DiagnosticsView(model: model)
+                .onAppear {
+                    NSApp.setActivationPolicy(.regular)
+                    NSApp.activate(ignoringOtherApps: true)
+                }
         }
         .defaultSize(width: 760, height: 560)
     }

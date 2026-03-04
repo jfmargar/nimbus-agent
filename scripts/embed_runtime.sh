@@ -6,6 +6,7 @@ APP_RES="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
 AIPAL_DEST="${APP_RES}/aipal"
 RUNTIME_DEST="${APP_RES}/runtime"
 SIGNING_IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:-}}"
+CODE_SIGNING_ALLOWED_VALUE="${CODE_SIGNING_ALLOWED:-YES}"
 NODE_ENTITLEMENTS="${SRCROOT}/scripts/node_runtime.entitlements"
 
 if [[ ! -d "${EMBED_ROOT}/aipal" ]] || [[ ! -f "${EMBED_ROOT}/runtime/node" ]]; then
@@ -26,6 +27,11 @@ rm -f "${AIPAL_DEST}/node_modules/.bin/biome"
 
 if [[ -z "${SIGNING_IDENTITY}" ]]; then
   echo "warning: No code signing identity available for nested runtime signing"
+  exit 0
+fi
+
+if [[ "${CODE_SIGNING_ALLOWED_VALUE}" == "NO" ]]; then
+  echo "warning: CODE_SIGNING_ALLOWED=NO; skipping nested runtime signing"
   exit 0
 fi
 
