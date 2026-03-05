@@ -1439,6 +1439,7 @@ function createAgentRunner(options) {
     runAgentForChat,
     runAgentTurnForChat,
     runAgentOneShot,
+    runCodexNewSessionInteractive,
   };
 }
 

@@ -134,6 +134,23 @@ function createGeminiAcpRunner(options = {}) {
     let activeToolStartedAt = 0;
     let acceptSessionUpdates = false;
 
+    function appendAgentChunk(textChunk) {
+      const incoming = String(textChunk || '');
+      if (!incoming) return;
+      const current = outputChunks.join('');
+
+      // Gemini streams can arrive as deltas or as "full text so far".
+      if (current && incoming.startsWith(current)) {
+        outputChunks.length = 0;
+        outputChunks.push(incoming);
+        return;
+      }
+      if (current && current.startsWith(incoming)) {
+        return;
+      }
+      outputChunks.push(incoming);
+    }
+
     async function emitEvent(event) {
       if (typeof onEvent !== 'function' || !event) return;
       try {
@@ -290,7 +307,7 @@ function createGeminiAcpRunner(options = {}) {
               message: 'Gemini: preparando respuesta...',
             });
           }
-          outputChunks.push(String(update.content.text || ''));
+          appendAgentChunk(update.content.text);
         }
       },
     };

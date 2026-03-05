@@ -460,6 +460,12 @@ struct EnvAssembler {
             env["AIPAL_AGENT_CWD"] = trimmedCwd
         }
 
+        env["AIPAL_AGENT_TIMEOUT_MS"] = String(settings.agentTimeoutMs)
+        env["AIPAL_AGENT_MAX_BUFFER"] = String(settings.agentMaxBuffer)
+        env["AIPAL_CODEX_APPROVAL_MODE"] = settings.codexApprovalMode
+        env["AIPAL_CODEX_SANDBOX_MODE"] = settings.codexSandboxMode
+        env["AIPAL_CODEX_PROGRESS_UPDATES"] = settings.codexProgressUpdates ? "true" : "false"
+
         return env
     }
 }

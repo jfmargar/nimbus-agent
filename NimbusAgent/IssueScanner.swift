@@ -144,7 +144,6 @@ struct IssueScanner {
                 executablePath: ghPath,
                 arguments: [
                     "issue", "list",
-                    "-R", repository.repository,
                     "--state", "open",
                     "--assignee", "@me",
                     "--label", label,
@@ -182,14 +181,16 @@ struct IssueScanner {
         }
 
         var issuesById: [String: DashboardIssue] = [:]
-        let encodedProject = repository.repository.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
-            ?? repository.repository
 
         for label in labels {
-            let endpoint = "projects/\(encodedProject)/issues?state=opened&scope=assigned_to_me&labels=\(urlEncode(label))"
             let result = try CommandExecutor.runProcess(
                 executablePath: glabPath,
-                arguments: ["api", endpoint],
+                arguments: [
+                    "issue", "list",
+                    "--assignee", "@me",
+                    "--label", label,
+                    "--output", "json"
+                ],
                 environment: environment,
                 currentDirectoryURL: URL(fileURLWithPath: repository.localPath, isDirectory: true)
             )

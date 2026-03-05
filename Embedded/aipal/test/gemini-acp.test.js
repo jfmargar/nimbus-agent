@@ -310,3 +310,112 @@ test('gemini ACP runner ignores replayed history when resuming a session', async
     threadId: 'session-1',
   });
 });
+
+test('gemini ACP runner handles cumulative chunks within the same turn', async () => {
+  delete process.env.AIPAL_GEMINI_APPROVAL_MODE;
+  const child = createChildProcess();
+
+  const runner = createGeminiAcpRunner({
+    timeoutMs: 5000,
+    spawnImpl: () => child,
+    loadSdk: () => ({
+      PROTOCOL_VERSION: '1',
+      ndJsonStream: () => ({}),
+      ClientSideConnection: class {
+        constructor(createClient) {
+          this.client = createClient();
+        }
+        async initialize() {}
+        async loadSession() {}
+        async prompt() {
+          await this.client.sessionUpdate({
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: {
+                type: 'text',
+                text: 'Hola',
+              },
+            },
+          });
+          await this.client.sessionUpdate({
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: {
+                type: 'text',
+                text: 'Hola mundo',
+              },
+            },
+          });
+          return { stopReason: 'end_turn' };
+        }
+      },
+    }),
+  });
+
+  const result = await runner.runTurn({
+    cwd: process.cwd(),
+    prompt: 'hola',
+    threadId: 'session-1',
+  });
+
+  assert.deepEqual(result, {
+    text: 'Hola mundo',
+    threadId: 'session-1',
+  });
+});
+
+test('gemini ACP runner does not trim valid short repeated openings', async () => {
+  delete process.env.AIPAL_GEMINI_APPROVAL_MODE;
+  const child = createChildProcess();
+  let turn = 0;
+
+  const runner = createGeminiAcpRunner({
+    timeoutMs: 5000,
+    spawnImpl: () => child,
+    loadSdk: () => ({
+      PROTOCOL_VERSION: '1',
+      ndJsonStream: () => ({}),
+      ClientSideConnection: class {
+        constructor(createClient) {
+          this.client = createClient();
+        }
+        async initialize() {}
+        async loadSession() {}
+        async prompt() {
+          turn += 1;
+          const text =
+            turn === 1
+              ? 'Hola'
+              : 'Hola, aqui va una respuesta nueva que no debe perder el inicio.';
+          await this.client.sessionUpdate({
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text },
+            },
+          });
+          return { stopReason: 'end_turn' };
+        }
+      },
+    }),
+  });
+
+  const first = await runner.runTurn({
+    cwd: process.cwd(),
+    prompt: 'hola',
+    threadId: 'session-2',
+  });
+  const second = await runner.runTurn({
+    cwd: process.cwd(),
+    prompt: 'hola',
+    threadId: 'session-2',
+  });
+
+  assert.deepEqual(first, {
+    text: 'Hola',
+    threadId: 'session-2',
+  });
+  assert.deepEqual(second, {
+    text: 'Hola, aqui va una respuesta nueva que no debe perder el inicio.',
+    threadId: 'session-2',
+  });
+});
