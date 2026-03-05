@@ -117,6 +117,16 @@ function formatError(err) {
   if (!err) return 'Unknown error';
   const parts = [];
   if (err.message) parts.push(err.message);
+  if (err.errorKind === 'approval_required') {
+    parts.push(
+      'Sugerencia: Codex pidió aprobación. Revisa AIPAL_CODEX_APPROVAL_MODE en Settings > Avanzado.'
+    );
+  }
+  if (err.errorKind === 'sandbox_denied') {
+    parts.push(
+      'Sugerencia: el sandbox bloqueó el comando. Revisa AIPAL_CODEX_SANDBOX_MODE y que el repo activo sea el correcto.'
+    );
+  }
   if (err.code) parts.push(`code: ${err.code}`);
   if (err.stderr) parts.push(`stderr: ${String(err.stderr).trim()}`);
   const message = parts.filter(Boolean).join('\n');

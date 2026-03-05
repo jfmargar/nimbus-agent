@@ -349,6 +349,26 @@ final class SettingsStore {
 }
 
 struct EnvAssembler {
+    private static let codexShellVariables = [
+        "PATH",
+        "HOME",
+        "SSH_AUTH_SOCK",
+        "SSH_AGENT_PID",
+        "GIT_ASKPASS",
+        "GITLAB_TOKEN",
+        "GLAB_TOKEN",
+        "GITLAB_HOST",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_HOST",
+        "GLAB_CONFIG_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+        "LANG",
+        "LC_ALL"
+    ]
+
     private static let geminiShellVariables = [
         "PATH",
         "HOME",
@@ -356,6 +376,8 @@ struct EnvAssembler {
         "SSH_AGENT_PID",
         "GIT_ASKPASS",
         "GITLAB_TOKEN",
+        "GLAB_TOKEN",
+        "GITLAB_HOST",
         "GLAB_CONFIG_DIR",
         "XDG_CONFIG_HOME",
         "XDG_CACHE_HOME",
@@ -389,6 +411,7 @@ struct EnvAssembler {
         if bot == .gemini {
             env.merge(ShellResolver.interactiveShellEnvironment(variableNames: geminiShellVariables)) { _, new in new }
         } else {
+            env.merge(ShellResolver.interactiveShellEnvironment(variableNames: codexShellVariables)) { _, new in new }
             env["PATH"] = ShellResolver.mergedPathValue()
         }
 
@@ -401,6 +424,10 @@ struct EnvAssembler {
         env["CODEX_HOME"] = effectiveCodexHome(from: env)
         if bot == .codex {
             env["XDG_CONFIG_HOME"] = configHome(for: bot).path
+            let glabConfigDir = env["GLAB_CONFIG_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if glabConfigDir.isEmpty {
+                env["GLAB_CONFIG_DIR"] = "\(NSHomeDirectory())/.config/glab-cli"
+            }
         } else {
             env["AIPAL_STATE_HOME"] = aipalStateHome(for: bot).path
             env.removeValue(forKey: "AIPAL_GEMINI_APPROVAL_MODE")
