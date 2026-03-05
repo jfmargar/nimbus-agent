@@ -6,6 +6,31 @@ The format is based on Keep a Changelog.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-03-05
+
+### Added
+- Orchestrator dashboard for issue workflows:
+  - recursive local repository autodiscovery from configured root folders
+  - issue scanning for GitHub/GitLab with label-union filtering
+  - per-issue quick actions with live PTY output in an integrated console
+- Dashboard Codex templates with placeholders for repository/issue context and default branch-oriented prompt (`codex/issue-{issue_number}`)
+- Preflight diagnostics for the secondary bot including GitLab CLI auth visibility (`glab auth status`)
+
+### Changed
+- Dashboard repository selection now relies on autodiscovery from configured roots instead of manual target curation
+- Dashboard Codex execution path now runs natively through the app command runner (`codex exec ...`) instead of the obsolete helper script flow
+- Secondary `gemini` startup flow now runs isolated and resets persisted thread state on startup to avoid stale resumed sessions
+- Updated default Codex dashboard command to `codex exec -s workspace-write -C {repo_path} {codex_prompt}`
+
+### Fixed
+- Issue scanner crash and related dashboard UI regressions
+- PTY command execution/parsing bugs that broke Codex session extraction (Python escaping, ANSI chunk handling, SQLite session id patching)
+- Codex issue-run reliability when creating or forcing new sessions from dashboard actions
+- Gemini integration stability (approval handling, runtime flow, and startup/session behavior)
+
+### Documentation
+- Refreshed main README to document Orchestrator behavior, Gemini runtime flow, and current configuration defaults
+
 ## [1.2.1] - 2026-03-01
 
 ### Added

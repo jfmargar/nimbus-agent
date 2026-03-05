@@ -17,7 +17,7 @@ Descarga directa del paquete generado:
 - Puede ejecutar dos bots simultáneos:
   - un bot bloqueado a `codex`
   - un bot bloqueado a `gemini`
-- Incluye un **Dashboard** para descubrir repositorios locales, escanear issues (GitHub/GitLab) y ejecutar acciones sobre ellos.
+- Incluye un **Dashboard (Orchestrator)** para descubrir repositorios locales, escanear issues (GitHub/GitLab) y ejecutar acciones sobre ellos con consola en vivo.
 - Abre ventanas de **Configuración** y **Diagnóstico**.
 - Ejecuta **preflight** antes de arrancar para validar requisitos locales.
 - Muestra logs recientes y permite copiarlos para soporte.
@@ -103,6 +103,17 @@ En las sesiones compartidas de Codex se envía solo:
 - contexto puntual de imágenes o documentos si existen,
 - contexto puntual de scripts si el turno lo necesita.
 
+## Cómo funciona con Gemini
+
+El segundo bot de Nimbus está bloqueado a `gemini` y se ejecuta como proceso independiente del bot de Codex.
+
+Reglas actuales:
+
+- Requiere el comando `gemini` en `PATH`.
+- Mantiene estado aislado bajo `~/Library/Application Support/NimbusAgent/BotConfig/gemini/aipal`.
+- Limpia la sesión persistida (`threads.json`) al arrancar para empezar en limpio y evitar reanudar conversaciones antiguas por error.
+- No comparte sesiones con Codex app; la continuidad bidireccional descrita arriba aplica al bot `codex`.
+
 ## Requisitos de la máquina
 
 Para que NimbusAgent funcione correctamente en una máquina nueva, necesitas:
@@ -120,6 +131,7 @@ Para que NimbusAgent funcione correctamente en una máquina nueva, necesitas:
 - un comando de transcripción compatible para audio
 - `gh` (GitHub CLI) si quieres usar el escáner de issues de GitHub en el Dashboard
 - `glab` (GitLab CLI) si quieres usar el escáner de issues de GitLab en el Dashboard
+- sesión autenticada en `gh`/`glab` para que el escáner pueda listar issues asignadas
 
 ### Solo para mantenimiento del runtime embebido
 
@@ -204,14 +216,15 @@ Notas:
 - Si `AIPAL_AGENT_CWD` está vacío, AIPAL usa su fallback por defecto.
 - En el caso de `codex`, el proyecto activo real se resuelve por topic/sesión; `AIPAL_AGENT_CWD` actúa como valor por defecto, no como estado principal compartido.
 - Nimbus fuerza `CODEX_HOME` a `~/.codex` si no viene definido, para compartir sesiones con Codex app.
-- Cada bot usa un `XDG_CONFIG_HOME` aislado para separar `config.json`, `threads.json`, memoria y overrides.
+- `codex` usa `XDG_CONFIG_HOME` aislado bajo `~/Library/Application Support/NimbusAgent/BotConfig/codex`.
+- `gemini` usa `AIPAL_STATE_HOME` aislado bajo `~/Library/Application Support/NimbusAgent/BotConfig/gemini/aipal`.
 
 ### Avanzado
 
 Valores por defecto actuales relativos al comportamiento del agente:
 
 - `AIPAL_WHISPER_CMD`: `parakeet-mlx`
-- `AIPAL_CODEX_APPROVAL_MODE`: modo por defecto
+- `AIPAL_CODEX_APPROVAL_MODE`: `never` (otros válidos: `on-request`, `on-failure`, `untrusted`)
 - `AIPAL_CODEX_SANDBOX_MODE`: `workspace-write` (otros válidos: `read-only`, `danger-full-access`)
 - `AIPAL_SCRIPT_TIMEOUT_MS`: `120000`
 - `AIPAL_AGENT_TIMEOUT_MS`: `600000`
@@ -220,16 +233,19 @@ Valores por defecto actuales relativos al comportamiento del agente:
 - `AIPAL_MEMORY_RETRIEVAL_LIMIT`: `8`
 - `AIPAL_SHUTDOWN_DRAIN_TIMEOUT_MS`: `120000`
 
-## Dashboard de Issues
+## Dashboard / Orchestrator
 
-NimbusAgent incluye una pestaña de **Dashboard** para gestionar tareas y lanzar agentes sobre repositorios locales, sin salir de la app.
+NimbusAgent incluye una pestaña de **Orchestrator** para gestionar tareas y lanzar agentes sobre repositorios locales, sin salir de la app.
 
 Características principales:
 
-- **Autodescubrimiento**: Selecciona carpetas raíz en Preferencias y el sistema detectará recursivamente los repositorios Git locales y sus remotos.
-- **Escáner de Issues**: Utilizando los CLI instalados (`gh` y `glab`), busca issues abiertos filtrando por etiquetas (por defecto: `ai, codex, agent`).
-- **Punto de lanzamiento**: Muestra un listado de los issues detectados y ofrece acciones rápidas.
-- **Automatizaciones Custom**: Permite definir acciones en el formato `Etiqueta::comando` donde comando puede inyectar variables como `{repo_path}`, `{issue_url}`, `{codex_prompt}`. Por defecto, existe una acción para ejecutar un bot local de `codex` sobre el issue en cuestión.
+- **Autodescubrimiento**: seleccionas carpetas raíz en Preferencias y el sistema detecta recursivamente repositorios Git locales, resuelve su remoto `origin` y deduplica checkouts duplicados.
+- **Escáner de Issues**: usando `gh`/`glab`, busca issues abiertas asignadas (`@me`) con unión por labels (por defecto: `ai, codex, agent`).
+- **Punto de lanzamiento**: muestra un listado de issues detectadas con acciones rápidas por issue (`Abrir issue`, `Abrir repo`, `Codex`, automatizaciones personalizadas).
+- **Consola en vivo**: cada acción ejecutada en PTY emite salida en tiempo real en el panel inferior.
+- **Plantillas configurables**: puedes personalizar prompt y comando de Codex con placeholders (`{repo}`, `{repo_path}`, `{issue_number}`, `{issue_title}`, `{issue_url}`, `{issue_labels}`, `{codex_prompt}`).
+- **Comando por defecto de Codex**: `codex exec -s workspace-write -C {repo_path} {codex_prompt}`.
+- **Prompt por defecto de Codex**: pide crear rama `codex/issue-{issue_number}`, revisar contexto y proponer/ejecutar plan de resolución.
 
 ## Diagnóstico
 
