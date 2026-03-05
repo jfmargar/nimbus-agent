@@ -357,6 +357,25 @@ test('runAgentForChat blocks a new codex prompt when an active turn is still run
   assert.equal(harness.sdkRequests.length, 0);
 });
 
+test('runAgentForChat can force a new codex session while a previous active turn is marked running', async () => {
+  const harness = createRunnerHarness();
+  harness.activeTurns.set('1:root:codex', {
+    threadId: 'thread-stuck',
+    startedAt: '2026-03-03T12:00:00.000Z',
+    status: 'running',
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Nueva sesion', {
+    forceNewSession: true,
+    waitForInteractiveCompletion: true,
+  });
+
+  assert.equal(text, 'respuesta nueva');
+  assert.equal(harness.threads.get('chat:root:codex'), 'thread-cli');
+  assert.equal(harness.activeTurns.size, 0);
+  assert.ok(harness.getActiveTurnClears() >= 1);
+});
+
 test('runAgentForChat registers and clears an active turn around sdk execution', async () => {
   const harness = createRunnerHarness({
     resolveThreadId: () => ({

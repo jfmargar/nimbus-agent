@@ -904,6 +904,7 @@ function registerSettingsCommands(options) {
         topicId,
         thinkingOverride: 'minimal',
         waitForInteractiveCompletion: true,
+        forceNewSession: true,
       });
       feedback.stopTyping();
       if (feedback.progress) {

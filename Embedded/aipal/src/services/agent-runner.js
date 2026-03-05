@@ -1127,6 +1127,7 @@ function createAgentRunner(options) {
       thinkingOverride,
       waitForInteractiveCompletion = false,
       backgroundInteractiveCleanup = false,
+      forceNewSession = false,
     } = runOptions;
     const effectiveAgentId = resolveEffectiveAgentId(
       chatId,
@@ -1163,7 +1164,17 @@ function createAgentRunner(options) {
         ? getActiveTurn(chatId, topicId, effectiveAgentId)
         : null;
     if (
+      forceNewSession &&
       agent.id === 'codex' &&
+      activeTurn?.status === 'running' &&
+      activeTurn.threadId &&
+      (!threadId || String(activeTurn.threadId).trim() === String(threadId || '').trim())
+    ) {
+      await clearRunningActiveTurn(chatId, topicId, effectiveAgentId);
+    }
+    if (
+      agent.id === 'codex' &&
+      !forceNewSession &&
       activeTurn?.status === 'running' &&
       activeTurn.threadId &&
       (!threadId || String(activeTurn.threadId).trim() === String(threadId || '').trim())
