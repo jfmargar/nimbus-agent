@@ -419,3 +419,102 @@ test('gemini ACP runner does not trim valid short repeated openings', async () =
     threadId: 'session-2',
   });
 });
+
+test('gemini ACP runner captures late message chunks emitted right after prompt completion', async () => {
+  delete process.env.AIPAL_GEMINI_APPROVAL_MODE;
+  const child = createChildProcess();
+
+  const runner = createGeminiAcpRunner({
+    timeoutMs: 5000,
+    spawnImpl: () => child,
+    loadSdk: () => ({
+      PROTOCOL_VERSION: '1',
+      ndJsonStream: () => ({}),
+      ClientSideConnection: class {
+        constructor(createClient) {
+          this.client = createClient();
+        }
+        async initialize() {}
+        async newSession() {
+          return { sessionId: 'session-late' };
+        }
+        async prompt() {
+          setTimeout(() => {
+            this.client
+              .sessionUpdate({
+                update: {
+                  sessionUpdate: 'agent_message_chunk',
+                  content: { type: 'text', text: 'Respuesta tardía.' },
+                },
+              })
+              .catch(() => {});
+          }, 20);
+          return { stopReason: 'end_turn' };
+        }
+      },
+    }),
+  });
+
+  const result = await runner.runTurn({
+    cwd: process.cwd(),
+    prompt: 'hola',
+  });
+
+  assert.deepEqual(result, {
+    text: 'Respuesta tardía.',
+    threadId: 'session-late',
+  });
+});
+
+test('gemini ACP runner preserves agent chunk order even when progress events are slow', async () => {
+  delete process.env.AIPAL_GEMINI_APPROVAL_MODE;
+  const child = createChildProcess();
+
+  const runner = createGeminiAcpRunner({
+    timeoutMs: 5000,
+    spawnImpl: () => child,
+    loadSdk: () => ({
+      PROTOCOL_VERSION: '1',
+      ndJsonStream: () => ({}),
+      ClientSideConnection: class {
+        constructor(createClient) {
+          this.client = createClient();
+        }
+        async initialize() {}
+        async newSession() {
+          return { sessionId: 'session-order' };
+        }
+        async prompt() {
+          await this.client.sessionUpdate({
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: 'Hola' },
+            },
+          });
+          await this.client.sessionUpdate({
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: ', ¿en qué puedo ayudarte hoy?' },
+            },
+          });
+          return { stopReason: 'end_turn' };
+        }
+      },
+    }),
+  });
+
+  const result = await runner.runTurn({
+    cwd: process.cwd(),
+    prompt: 'hola',
+    onEvent: async (event) => {
+      if (event?.phase === 'responding') {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      }
+    },
+  });
+
+  assert.deepEqual(result, {
+    text: 'Hola, ¿en qué puedo ayudarte hoy?',
+    threadId: 'session-order',
+  });
+});

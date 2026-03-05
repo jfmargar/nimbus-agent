@@ -572,7 +572,7 @@ function setThreadForAgent(chatId, topicId, agentId, threadId) {
 
 bot.start(async (ctx) => {
   const replyOptions =
-    LOCKED_AGENT === 'opencode'
+    LOCKED_AGENT === 'opencode' || LOCKED_AGENT === 'gemini'
       ? undefined
       : {
           reply_markup: buildMainMenuKeyboard({ includeFollow: false }),

@@ -51,6 +51,7 @@ function createRunnerHarness(overrides = {}) {
   const activeTurnUpdates = [];
   let activeTurnClears = 0;
   let persistActiveTurnsCalls = 0;
+  let persistThreadsCalls = 0;
   let execCalls = 0;
   let execWithPtyCalls = 0;
   let lastExecWithPtyOptions = null;
@@ -230,7 +231,9 @@ function createRunnerHarness(overrides = {}) {
       persistActiveTurnsCalls += 1;
     },
     persistProjectOverrides: async () => {},
-    persistThreads: async () => {},
+    persistThreads: async () => {
+      persistThreadsCalls += 1;
+    },
     prefixTextWithTimestamp: (text) => text,
     resolveAgentProjectCwd: async () => projectDir,
     resolveEffectiveAgentId: () => 'codex',
@@ -281,6 +284,7 @@ function createRunnerHarness(overrides = {}) {
     getLastExecWithPtyOptions: () => lastExecWithPtyOptions,
     getRetrievalCalls: () => retrievalCalls,
     getPersistActiveTurnsCalls: () => persistActiveTurnsCalls,
+    getPersistThreadsCalls: () => persistThreadsCalls,
   };
 }
 
@@ -924,7 +928,7 @@ test('runAgentForChat keeps bash shell for generic non-opencode agents', async (
   assert.deepEqual(harness.getLastExecLocalArgs()?.[1]?.[0], '-lc');
 });
 
-test('runAgentForChat does not inject retrieved memory into resumed Gemini sessions', async () => {
+test('runAgentForChat runs Gemini turns stateless and clears persisted Gemini sessions', async () => {
   const geminiRequests = [];
   const harness = createRunnerHarness({
     agent: {
@@ -946,17 +950,20 @@ test('runAgentForChat does not inject retrieved memory into resumed Gemini sessi
       geminiRequests.push(request);
       return {
         text: 'respuesta gemini',
-        threadId: request.threadId,
+        threadId: 'session-created',
       };
     },
   });
+  harness.threads.set('chat:root:gemini', 'session-1');
 
   const text = await harness.runner.runAgentForChat(1, 'Hola otra vez');
 
   assert.equal(text, 'respuesta gemini');
   assert.equal(harness.getRetrievalCalls(), 0);
   assert.equal(geminiRequests.length, 1);
-  assert.equal(geminiRequests[0].threadId, 'session-1');
+  assert.equal(geminiRequests[0].threadId, undefined);
+  assert.equal(harness.threads.get('chat:root:gemini'), undefined);
+  assert.equal(harness.getPersistThreadsCalls(), 1);
   assert.doesNotMatch(geminiRequests[0].prompt, /Relevant memory retrieved:/);
   assert.match(geminiRequests[0].prompt, /Hola otra vez/);
 });

@@ -1144,12 +1144,20 @@ function createAgentRunner(options) {
     });
 
     const threads = getThreads();
-    const { threadKey, threadId, migrated } = resolveThreadId(
+    const { threadKey, threadId: resolvedThreadId, migrated } = resolveThreadId(
       threads,
       chatId,
       topicId,
       effectiveAgentId
     );
+    const isGeminiStateless = agent.id === 'gemini';
+    const threadId = isGeminiStateless
+      ? ''
+      : String(resolvedThreadId || '').trim();
+    let shouldPersistThreadsAfterResolve = Boolean(migrated);
+    if (isGeminiStateless && threads.delete(threadKey)) {
+      shouldPersistThreadsAfterResolve = true;
+    }
     const activeTurn =
       typeof getActiveTurn === 'function'
         ? getActiveTurn(chatId, topicId, effectiveAgentId)
@@ -1168,9 +1176,9 @@ function createAgentRunner(options) {
     threadTurns.set(threadKey, turnCount);
     const shouldIncludeFileInstructions =
       !threadId || turnCount % fileInstructionsEvery === 0;
-    if (migrated) {
+    if (shouldPersistThreadsAfterResolve) {
       persistThreads().catch((err) =>
-        console.warn('Failed to persist migrated threads:', err)
+        console.warn('Failed to persist resolved thread state:', err)
       );
     }
 
@@ -1305,19 +1313,10 @@ function createAgentRunner(options) {
       const result = await runGeminiAcpTurn({
         cwd: executionCwd,
         prompt: finalPrompt,
-        threadId,
+        threadId: undefined,
         model,
         onEvent,
         onApprovalRequest: runOptions.onApprovalRequest,
-      });
-      await syncThreadAndProject({
-        chatId,
-        topicId,
-        effectiveAgentId,
-        threadKey,
-        threadId: result.threadId,
-        executionCwd,
-        threads,
       });
       return {
         text: result.text,

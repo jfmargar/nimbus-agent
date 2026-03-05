@@ -438,7 +438,7 @@ function registerSettingsCommands(options) {
   }
 
   function shouldShowMainMenuKeyboard() {
-    return lockedAgentId !== 'opencode';
+    return lockedAgentId !== 'opencode' && lockedAgentId !== 'gemini';
   }
 
   function buildMainMenuReplyOptions(chatId, topicId) {
@@ -1280,6 +1280,12 @@ function registerSettingsCommands(options) {
   bot.command('menu', async (ctx) => {
     if (!canUseSensitiveCommands()) {
       await denySensitiveCommand(ctx);
+      return;
+    }
+    if (lockedAgentId === 'gemini') {
+      await ctx.reply(
+        'Este bot Gemini funciona en modo chat sin teclado. Envía tu mensaje directamente.'
+      );
       return;
     }
     await openMainMenu(ctx);

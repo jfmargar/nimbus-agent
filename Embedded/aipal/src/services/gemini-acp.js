@@ -6,6 +6,8 @@ const { Readable, Writable } = require('stream');
 
 const GEMINI_BIN = 'gemini';
 const ACP_TIMEOUT_GRACE_MS = 1500;
+const SESSION_UPDATE_DRAIN_MAX_MS = 900;
+const SESSION_UPDATE_DRAIN_IDLE_MS = 120;
 const CAPACITY_MESSAGE_REGEX =
   /"message"\s*:\s*"([^"]+)"|No capacity available for model ([^\s"]+)/i;
 
@@ -133,6 +135,8 @@ function createGeminiAcpRunner(options = {}) {
     let activeToolLabel = '';
     let activeToolStartedAt = 0;
     let acceptSessionUpdates = false;
+    let pendingSessionUpdates = 0;
+    let lastSessionUpdateAt = Date.now();
 
     function appendAgentChunk(textChunk) {
       const incoming = String(textChunk || '');
@@ -157,6 +161,24 @@ function createGeminiAcpRunner(options = {}) {
         await onEvent(event);
       } catch (err) {
         console.warn('Gemini progress event failed:', err);
+      }
+    }
+
+    function markSessionUpdateActivity() {
+      lastSessionUpdateAt = Date.now();
+    }
+
+    async function waitForSessionUpdateDrain() {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < SESSION_UPDATE_DRAIN_MAX_MS) {
+        const idleForMs = Date.now() - lastSessionUpdateAt;
+        if (
+          pendingSessionUpdates === 0 &&
+          idleForMs >= SESSION_UPDATE_DRAIN_IDLE_MS
+        ) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 30));
       }
     }
 
@@ -246,68 +268,76 @@ function createGeminiAcpRunner(options = {}) {
         };
       },
       async sessionUpdate(params) {
+        pendingSessionUpdates += 1;
+        markSessionUpdateActivity();
         const update = params?.update;
-        if (!update || typeof update !== 'object') return;
-        if (!acceptSessionUpdates) {
-          return;
-        }
-        if (update.sessionUpdate === 'tool_call') {
-          const title = buildToolTitle(update);
-          if (update.toolCallId) {
-            toolTitles.set(String(update.toolCallId).trim(), title);
+        try {
+          if (!update || typeof update !== 'object') return;
+          if (!acceptSessionUpdates) {
+            return;
           }
-          startToolHeartbeat(title);
-          await emitEvent({
-            type: 'tool_activity',
-            agent: 'gemini',
-            tool: title,
-            state: 'running',
-            message: `Gemini: ejecutando ${title}.`,
-          });
-          return;
-        }
-        if (update.sessionUpdate === 'tool_call_update') {
-          const toolLabel =
-            toolTitles.get(String(update.toolCallId || '').trim()) ||
-            buildToolTitle(update);
-          if (update.status === 'completed' || update.status === 'failed') {
-            clearToolHeartbeat();
-          }
-          const statusText =
-            update.status === 'completed'
-              ? 'completó'
-              : update.status === 'failed'
-                ? 'falló'
-                : 'actualizó';
-          await emitEvent({
-            type: 'tool_activity',
-            agent: 'gemini',
-            tool: toolLabel,
-            state:
-              update.status === 'completed'
-                ? 'finished'
-                : update.status === 'failed'
-                  ? 'failed'
-                  : 'running',
-            message: `Gemini: ${statusText} ${toolLabel}.`,
-          });
-          return;
-        }
-        if (
-          update.sessionUpdate === 'agent_message_chunk' &&
-          update.content?.type === 'text'
-        ) {
-          clearToolHeartbeat();
-          if (!announcedResponse) {
-            announcedResponse = true;
-            await emitEvent({
-              type: 'status',
+          if (update.sessionUpdate === 'tool_call') {
+            const title = buildToolTitle(update);
+            if (update.toolCallId) {
+              toolTitles.set(String(update.toolCallId).trim(), title);
+            }
+            startToolHeartbeat(title);
+            emitEvent({
+              type: 'tool_activity',
               agent: 'gemini',
-              phase: 'responding',
-              message: 'Gemini: preparando respuesta...',
-            });
+              tool: title,
+              state: 'running',
+              message: `Gemini: ejecutando ${title}.`,
+            }).catch(() => {});
+            return;
           }
-          appendAgentChunk(update.content.text);
+          if (update.sessionUpdate === 'tool_call_update') {
+            const toolLabel =
+              toolTitles.get(String(update.toolCallId || '').trim()) ||
+              buildToolTitle(update);
+            if (update.status === 'completed' || update.status === 'failed') {
+              clearToolHeartbeat();
+            }
+            const statusText =
+              update.status === 'completed'
+                ? 'completó'
+                : update.status === 'failed'
+                  ? 'falló'
+                  : 'actualizó';
+            emitEvent({
+              type: 'tool_activity',
+              agent: 'gemini',
+              tool: toolLabel,
+              state:
+                update.status === 'completed'
+                  ? 'finished'
+                  : update.status === 'failed'
+                    ? 'failed'
+                    : 'running',
+              message: `Gemini: ${statusText} ${toolLabel}.`,
+            }).catch(() => {});
+            return;
+          }
+          if (
+            update.sessionUpdate === 'agent_message_chunk' &&
+            update.content?.type === 'text'
+          ) {
+            clearToolHeartbeat();
+            // Always append text first so chunk order does not depend on slow progress callbacks.
+            appendAgentChunk(update.content.text);
+            if (!announcedResponse) {
+              announcedResponse = true;
+              emitEvent({
+                type: 'status',
+                agent: 'gemini',
+                phase: 'responding',
+                message: 'Gemini: preparando respuesta...',
+              }).catch(() => {});
+            }
+          }
+        } finally {
+          markSessionUpdateActivity();
+          pendingSessionUpdates = Math.max(0, pendingSessionUpdates - 1);
         }
       },
     };
@@ -385,6 +415,7 @@ function createGeminiAcpRunner(options = {}) {
       }
 
       acceptSessionUpdates = true;
+      lastSessionUpdateAt = Date.now();
       await emitEvent({
         type: 'status',
         agent: 'gemini',
@@ -398,6 +429,7 @@ function createGeminiAcpRunner(options = {}) {
         }),
         childError,
       ]);
+      await waitForSessionUpdateDrain();
 
       completed = true;
       clearToolHeartbeat();

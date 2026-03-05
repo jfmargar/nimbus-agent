@@ -147,6 +147,7 @@ test('help reflects locked agent mode', async () => {
   });
 
   assert.match(replies[0], /\/agent - Locked to gemini/);
+  assert.match(replies[0], /\/menu - Not available in chat-only Gemini mode/);
 });
 
 test('help lists gemini before codex and opencode for unlocked bots', async () => {
@@ -195,4 +196,28 @@ test('agent command suggests gemini first for invalid agents', async () => {
   assert.deepEqual(replies, [
     'Unknown agent. Use /agent gemini|codex|claude|opencode.',
   ]);
+});
+
+test('menu command is disabled for locked gemini chat-only mode', async () => {
+  const bot = createFakeBot();
+  registerSettingsCommands(
+    createSettingsOptions(bot, {
+      allowedUsers: new Set(['1']),
+      lockedAgentId: 'gemini',
+      getGlobalAgent: () => 'gemini',
+    })
+  );
+
+  const replies = [];
+  await bot.commands.get('menu')({
+    chat: { id: 1 },
+    message: { text: '/menu' },
+    reply: async (message, options) => {
+      replies.push({ message, options });
+    },
+  });
+
+  assert.equal(replies.length, 1);
+  assert.match(replies[0].message, /modo chat sin teclado/i);
+  assert.equal(replies[0].options, undefined);
 });
