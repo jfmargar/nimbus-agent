@@ -26,11 +26,29 @@ function registerMediaHandlers(options) {
     transcribeAudio,
   } = options;
 
+  function shouldUseAgentProgress(effectiveAgentId) {
+    return (
+      typeof beginProgress === 'function' &&
+      ((effectiveAgentId === 'codex' && codexProgressUpdatesEnabled) ||
+        effectiveAgentId === 'gemini' ||
+        effectiveAgentId === 'opencode')
+    );
+  }
+
+  function getProgressInitialText(effectiveAgentId) {
+    if (effectiveAgentId === 'gemini') return 'Gemini: iniciando sesión...';
+    if (effectiveAgentId === 'opencode') return 'Opencode: iniciando sesión...';
+    return 'Codex: iniciando sesion...';
+  }
+
+  function getProgressFailureText(effectiveAgentId) {
+    if (effectiveAgentId === 'gemini') return 'Gemini: error durante la ejecución.';
+    if (effectiveAgentId === 'opencode') return 'Opencode: error durante la ejecución.';
+    return 'Codex: error durante la ejecucion.';
+  }
+
   async function createExecutionFeedback(ctx, effectiveAgentId) {
-    const useProgress =
-      codexProgressUpdatesEnabled &&
-      effectiveAgentId === 'codex' &&
-      typeof beginProgress === 'function';
+    const useProgress = shouldUseAgentProgress(effectiveAgentId);
     if (!useProgress) {
       return {
         onEvent: undefined,
@@ -38,10 +56,17 @@ function registerMediaHandlers(options) {
         stopTyping: startTyping(ctx),
       };
     }
-    const progress = await beginProgress(ctx, 'Codex: iniciando sesion...');
+    const progress = await beginProgress(
+      ctx,
+      getProgressInitialText(effectiveAgentId)
+    );
     return {
       onEvent: async (event) => {
-        if (!progress || event?.type === 'output_text') return;
+        if (!progress) return;
+        if (typeof progress.updateEvent === 'function') {
+          await progress.updateEvent(event);
+          return;
+        }
         const message = renderProgressEvent(event);
         if (message) {
           await progress.update(message);
@@ -117,7 +142,7 @@ function registerMediaHandlers(options) {
         console.error(err);
         feedback.stopTyping();
         if (feedback.progress) {
-          await feedback.progress.fail('Codex: error durante la ejecucion.');
+          await feedback.progress.fail(getProgressFailureText(effectiveAgentId));
         }
         if (err && err.code === 'ENOENT') {
           await replyWithError(
@@ -197,7 +222,7 @@ function registerMediaHandlers(options) {
         console.error(err);
         feedback.stopTyping();
         if (feedback.progress) {
-          await feedback.progress.fail('Codex: error durante la ejecucion.');
+          await feedback.progress.fail(getProgressFailureText(effectiveAgentId));
         }
         await replyWithError(ctx, 'Error processing image.', err);
       } finally {
@@ -268,7 +293,7 @@ function registerMediaHandlers(options) {
         console.error(err);
         feedback.stopTyping();
         if (feedback.progress) {
-          await feedback.progress.fail('Codex: error durante la ejecucion.');
+          await feedback.progress.fail(getProgressFailureText(effectiveAgentId));
         }
         await replyWithError(ctx, 'Error processing document.', err);
       } finally {

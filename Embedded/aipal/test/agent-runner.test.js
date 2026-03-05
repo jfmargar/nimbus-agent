@@ -43,16 +43,25 @@ function createRunnerHarness(overrides = {}) {
   const projectDir =
     overrides.projectDir ||
     fs.mkdtempSync(path.join(os.tmpdir(), 'aipal-agent-runner-project-'));
+  const activeTurns = new Map();
   const threads = new Map();
   const threadTurns = new Map();
   const setProjectCalls = [];
   const sdkRequests = [];
+  const activeTurnUpdates = [];
+  let activeTurnClears = 0;
+  let persistActiveTurnsCalls = 0;
+  let persistThreadsCalls = 0;
   let execCalls = 0;
   let execWithPtyCalls = 0;
   let lastExecWithPtyOptions = null;
+  let lastExecLocalArgs = null;
   let bootstrapCalls = 0;
   let retrievalCalls = 0;
+  let geminiPromptCalls = 0;
+  let lastBuildGeminiPromptArgs = null;
   let lastBuildSharedPromptArgs = null;
+  let lastBuildPromptArgs = null;
 
   const codexAgent = {
     id: 'codex',
@@ -74,6 +83,7 @@ function createRunnerHarness(overrides = {}) {
       return { text: 'respuesta nueva', sawText: true };
     },
   };
+  const configuredAgent = overrides.agent || codexAgent;
 
   const runner = createAgentRunner({
     agentMaxBuffer: 1024 * 1024,
@@ -84,9 +94,26 @@ function createRunnerHarness(overrides = {}) {
     },
     buildMemoryRetrievalContext: async () => {
       retrievalCalls += 1;
+      if (typeof overrides.buildMemoryRetrievalContext === 'function') {
+        return overrides.buildMemoryRetrievalContext();
+      }
       return '';
     },
-    buildPrompt: (prompt) => prompt,
+    buildGeminiPrompt: (...args) => {
+      geminiPromptCalls += 1;
+      lastBuildGeminiPromptArgs = args;
+      if (typeof overrides.buildGeminiPrompt === 'function') {
+        return overrides.buildGeminiPrompt(...args);
+      }
+      return args[0];
+    },
+    buildPrompt: (...args) => {
+      lastBuildPromptArgs = args;
+      if (typeof overrides.buildPrompt === 'function') {
+        return overrides.buildPrompt(...args);
+      }
+      return args[0];
+    },
     buildSharedSessionPrompt: (...args) => {
       lastBuildSharedPromptArgs = args;
       if (typeof overrides.buildSharedSessionPrompt === 'function') {
@@ -96,6 +123,11 @@ function createRunnerHarness(overrides = {}) {
     },
     codexApprovalMode: 'never',
     codexSandboxMode: 'workspace-write',
+    clearActiveTurn: (chatId, topicId, agentId) => {
+      activeTurnClears += 1;
+      const key = `${chatId}:${topicId || 'root'}:${agentId}`;
+      return activeTurns.delete(key);
+    },
     createCodexSdkClient: () => ({
       runTurn: async (request) => {
         sdkRequests.push(request);
@@ -118,10 +150,11 @@ function createRunnerHarness(overrides = {}) {
       },
     }),
     documentDir: '/tmp',
-    execLocal: async () => {
+    execLocal: async (...args) => {
       execCalls += 1;
+      lastExecLocalArgs = args;
       if (typeof overrides.execLocal === 'function') {
-        return overrides.execLocal();
+        return overrides.execLocal(...args);
       }
       return '{"type":"thread.started","thread_id":"thread-id"}';
     },
@@ -147,10 +180,14 @@ function createRunnerHarness(overrides = {}) {
         },
       ];
     },
-    getAgent: () => codexAgent,
-    getAgentLabel: () => 'codex',
-    getGlobalAgent: () => 'codex',
-    getGlobalModels: () => ({ codex: 'gpt-5-codex' }),
+    getAgent: () => configuredAgent,
+    getAgentLabel: () => configuredAgent.label,
+    getActiveTurn: (chatId, topicId, agentId) =>
+      activeTurns.get(`${chatId}:${topicId || 'root'}:${agentId}`) || null,
+    getGlobalAgent: () => configuredAgent.id,
+    getGlobalModels: () =>
+      overrides.globalModels ||
+      (configuredAgent.id === 'codex' ? { codex: 'gpt-5-codex' } : {}),
     getGlobalThinking: () => 'medium',
     getDefaultAgentCwd: () => projectDir,
     getLocalCodexSessionMeta: async (threadId) => {
@@ -190,8 +227,13 @@ function createRunnerHarness(overrides = {}) {
     },
     listSqliteCodexThreads: async () => [],
     memoryRetrievalLimit: 5,
+    persistActiveTurns: async () => {
+      persistActiveTurnsCalls += 1;
+    },
     persistProjectOverrides: async () => {},
-    persistThreads: async () => {},
+    persistThreads: async () => {
+      persistThreadsCalls += 1;
+    },
     prefixTextWithTimestamp: (text) => text,
     resolveAgentProjectCwd: async () => projectDir,
     resolveEffectiveAgentId: () => 'codex',
@@ -206,12 +248,19 @@ function createRunnerHarness(overrides = {}) {
       };
     },
     shellQuote: (value) => `'${String(value)}'`,
+    setActiveTurn: (chatId, topicId, agentId, value) => {
+      const key = `${chatId}:${topicId || 'root'}:${agentId}`;
+      activeTurns.set(key, { ...value });
+      activeTurnUpdates.push({ key, value: { ...value } });
+      return { ...value };
+    },
     setProjectForAgent: (...args) => {
       setProjectCalls.push(args);
       return args[3];
     },
     threadTurns,
     defaultTimeZone: 'Europe/Madrid',
+    runGeminiAcpTurn: overrides.runGeminiAcpTurn,
     wrapCommandWithPty: (value) => value,
   });
 
@@ -219,14 +268,23 @@ function createRunnerHarness(overrides = {}) {
     projectDir,
     runner,
     sdkRequests,
+    activeTurns,
     setProjectCalls,
+    getActiveTurnClears: () => activeTurnClears,
+    getActiveTurnUpdates: () => activeTurnUpdates,
     threads,
     getBootstrapCalls: () => bootstrapCalls,
     getExecCalls: () => execCalls,
     getExecWithPtyCalls: () => execWithPtyCalls,
+    getGeminiPromptCalls: () => geminiPromptCalls,
+    getLastBuildGeminiPromptArgs: () => lastBuildGeminiPromptArgs,
+    getLastExecLocalArgs: () => lastExecLocalArgs,
+    getLastBuildPromptArgs: () => lastBuildPromptArgs,
     getLastBuildSharedPromptArgs: () => lastBuildSharedPromptArgs,
     getLastExecWithPtyOptions: () => lastExecWithPtyOptions,
     getRetrievalCalls: () => retrievalCalls,
+    getPersistActiveTurnsCalls: () => persistActiveTurnsCalls,
+    getPersistThreadsCalls: () => persistThreadsCalls,
   };
 }
 
@@ -276,6 +334,74 @@ test('runAgentForChat reuses existing codex session through sdk', async () => {
   assert.equal(harness.sdkRequests[0].threadId, 'thread-existing');
   assert.equal(harness.getExecCalls(), 0);
   assert.equal(harness.getExecWithPtyCalls(), 0);
+});
+
+test('runAgentForChat blocks a new codex prompt when an active turn is still running', async () => {
+  const harness = createRunnerHarness({
+    resolveThreadId: () => ({
+      threadKey: 'chat:root:codex',
+      threadId: 'thread-existing',
+      migrated: false,
+    }),
+  });
+  harness.activeTurns.set('1:root:codex', {
+    threadId: 'thread-existing',
+    startedAt: '2026-03-03T12:00:00.000Z',
+    status: 'running',
+  });
+
+  await assert.rejects(
+    () => harness.runner.runAgentForChat(1, 'Siguiente prompt'),
+    /Usa \/follow para seguirla/
+  );
+  assert.equal(harness.sdkRequests.length, 0);
+});
+
+test('runAgentForChat can force a new codex session while a previous active turn is marked running', async () => {
+  const harness = createRunnerHarness();
+  harness.activeTurns.set('1:root:codex', {
+    threadId: 'thread-stuck',
+    startedAt: '2026-03-03T12:00:00.000Z',
+    status: 'running',
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Nueva sesion', {
+    forceNewSession: true,
+    waitForInteractiveCompletion: true,
+  });
+
+  assert.equal(text, 'respuesta nueva');
+  assert.equal(harness.threads.get('chat:root:codex'), 'thread-cli');
+  assert.equal(harness.activeTurns.size, 0);
+  assert.ok(harness.getActiveTurnClears() >= 1);
+});
+
+test('runAgentForChat registers and clears an active turn around sdk execution', async () => {
+  const harness = createRunnerHarness({
+    resolveThreadId: () => ({
+      threadKey: 'chat:root:codex',
+      threadId: 'thread-existing',
+      migrated: false,
+    }),
+    runSdkTurn: async (request) => ({
+      text: 'respuesta reanudada',
+      threadId: request.threadId,
+      conversationId: request.threadId,
+      events: [],
+    }),
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Continua');
+
+  assert.equal(text, 'respuesta reanudada');
+  assert.ok(
+    harness
+      .getActiveTurnUpdates()
+      .some((entry) => entry.value.threadId === 'thread-existing' && entry.value.status === 'running')
+  );
+  assert.ok(harness.getPersistActiveTurnsCalls() >= 2);
+  assert.equal(harness.activeTurns.size, 0);
+  assert.ok(harness.getActiveTurnClears() >= 1);
 });
 
 test('runAgentForChat fails clearly when interactive creation does not resolve a visible session id', async () => {
@@ -441,7 +567,7 @@ test('runAgentTurnForChat can attach a visible session before interactive cleanu
   await result.cleanupPromise;
 });
 
-test('runAgentForChat waits for pending session initialization before resuming the codex thread', async () => {
+test('runAgentForChat blocks follow-up prompts while the codex turn is still active', async () => {
   let releaseCleanup;
   const cleanupGate = new Promise((resolve) => {
     releaseCleanup = resolve;
@@ -479,18 +605,13 @@ test('runAgentForChat waits for pending session initialization before resuming t
   });
   assert.equal(sessionCreation.threadId, 'thread-cli');
 
-  let resumed = false;
-  const resumePromise = harness.runner.runAgentForChat(1, 'Siguiente turno').then((text) => {
-    resumed = true;
-    return text;
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(resumed, false);
+  await assert.rejects(
+    () => harness.runner.runAgentForChat(1, 'Siguiente turno'),
+    /Usa \/follow para seguirla/
+  );
 
   releaseCleanup();
-  const resumedText = await resumePromise;
-  assert.equal(resumedText, 'respuesta thread-cli');
+  await sessionCreation.cleanupPromise;
 });
 
 test('runAgentTurnForChat still detects a newly created local codex session when diff misses it', async () => {
@@ -772,4 +893,193 @@ test('runAgentForChat keeps enriched prompt path for non-codex agents', async ()
   const text = await runner.runAgentForChat(1, 'Hola');
 
   assert.equal(text, 'salida final');
+});
+
+test('runAgentForChat uses zsh login shell for opencode turns', async () => {
+  const harness = createRunnerHarness({
+    agent: {
+      id: 'opencode',
+      label: 'opencode',
+      mergeStderr: false,
+      shellExecutable: '/bin/zsh',
+      shellArguments: ['-ilc'],
+      buildCommand: ({ prompt }) => `opencode ${JSON.stringify(prompt)}`,
+      parseOutput: () => ({ text: 'salida final', threadId: '', sawJson: true }),
+    },
+    resolveEffectiveAgentId: () => 'opencode',
+    resolveThreadId: () => ({
+      threadKey: 'chat:root:opencode',
+      threadId: '',
+      migrated: false,
+    }),
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Hola');
+
+  assert.equal(text, 'salida final');
+  assert.equal(harness.getExecCalls(), 1);
+  assert.deepEqual(harness.getLastExecLocalArgs()?.[0], '/bin/zsh');
+  assert.deepEqual(harness.getLastExecLocalArgs()?.[1]?.[0], '-ilc');
+});
+
+test('runAgentForChat keeps bash shell for generic non-opencode agents', async () => {
+  const harness = createRunnerHarness({
+    agent: {
+      id: 'claude',
+      label: 'claude',
+      mergeStderr: false,
+      buildCommand: ({ prompt }) => `claude ${JSON.stringify(prompt)}`,
+      parseOutput: () => ({ text: 'salida final', threadId: '', sawJson: true }),
+    },
+    resolveEffectiveAgentId: () => 'claude',
+    resolveThreadId: () => ({
+      threadKey: 'chat:root:claude',
+      threadId: '',
+      migrated: false,
+    }),
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Hola');
+
+  assert.equal(text, 'salida final');
+  assert.equal(harness.getExecCalls(), 1);
+  assert.deepEqual(harness.getLastExecLocalArgs()?.[0], 'bash');
+  assert.deepEqual(harness.getLastExecLocalArgs()?.[1]?.[0], '-lc');
+});
+
+test('runAgentForChat runs Gemini turns stateless and clears persisted Gemini sessions', async () => {
+  const geminiRequests = [];
+  const harness = createRunnerHarness({
+    agent: {
+      id: 'gemini',
+      label: 'gemini',
+      mergeStderr: false,
+      buildCommand: ({ prompt }) => `gemini ${JSON.stringify(prompt)}`,
+      parseOutput: () => ({ text: 'salida final', threadId: 'session-1', sawJson: true }),
+    },
+    resolveThreadId: () => ({
+      threadKey: 'chat:root:gemini',
+      threadId: 'session-1',
+      migrated: false,
+    }),
+    buildMemoryRetrievalContext: async () => {
+      throw new Error('memory retrieval should not run for resumed Gemini turns');
+    },
+    runGeminiAcpTurn: async (request) => {
+      geminiRequests.push(request);
+      return {
+        text: 'respuesta gemini',
+        threadId: 'session-created',
+      };
+    },
+  });
+  harness.threads.set('chat:root:gemini', 'session-1');
+
+  const text = await harness.runner.runAgentForChat(1, 'Hola otra vez');
+
+  assert.equal(text, 'respuesta gemini');
+  assert.equal(harness.getRetrievalCalls(), 0);
+  assert.equal(geminiRequests.length, 1);
+  assert.equal(geminiRequests[0].threadId, undefined);
+  assert.equal(harness.threads.get('chat:root:gemini'), undefined);
+  assert.equal(harness.getPersistThreadsCalls(), 1);
+  assert.doesNotMatch(geminiRequests[0].prompt, /Relevant memory retrieved:/);
+  assert.match(geminiRequests[0].prompt, /Hola otra vez/);
+});
+
+test('runAgentForChat starts Gemini sessions with GEMINI.md bootstrap and no retrieved memory', async () => {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aipal-agent-runner-project-'));
+  fs.writeFileSync(
+    path.join(projectDir, 'GEMINI.md'),
+    '# Contexto\nUsa glab para GitLab.\n',
+    'utf8'
+  );
+  const geminiRequests = [];
+  const harness = createRunnerHarness({
+    projectDir,
+    agent: {
+      id: 'gemini',
+      label: 'gemini',
+      mergeStderr: false,
+      buildCommand: ({ prompt }) => `gemini ${JSON.stringify(prompt)}`,
+      parseOutput: () => ({ text: 'salida final', threadId: 'session-1', sawJson: true }),
+    },
+    resolveThreadId: () => ({
+      threadKey: 'chat:root:gemini',
+      threadId: '',
+      migrated: false,
+    }),
+    buildMemoryRetrievalContext: async () => {
+      throw new Error('memory retrieval should not run for Gemini turns');
+    },
+    runGeminiAcpTurn: async (request) => {
+      geminiRequests.push(request);
+      return {
+        text: 'respuesta gemini',
+        threadId: 'session-1',
+      };
+    },
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Hola inicial');
+
+  assert.equal(text, 'respuesta gemini');
+  assert.equal(harness.getBootstrapCalls(), 0);
+  assert.equal(harness.getGeminiPromptCalls(), 1);
+  assert.equal(harness.getRetrievalCalls(), 0);
+  assert.equal(geminiRequests.length, 1);
+  assert.match(
+    geminiRequests[0].prompt,
+    new RegExp(`lee ${path.join(projectDir, 'GEMINI.md').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
+  );
+  assert.match(geminiRequests[0].prompt, /Hola inicial/);
+  assert.doesNotMatch(geminiRequests[0].prompt, /Relevant memory retrieved:/);
+  assert.doesNotMatch(geminiRequests[0].prompt, /Bootstrap config:/);
+});
+
+test('runAgentForChat uses a minimal Gemini prompt wrapper instead of the generic prompt builder', async () => {
+  const geminiRequests = [];
+  const harness = createRunnerHarness({
+    agent: {
+      id: 'gemini',
+      label: 'gemini',
+      mergeStderr: false,
+      buildCommand: ({ prompt }) => `gemini ${JSON.stringify(prompt)}`,
+      parseOutput: () => ({ text: 'salida final', threadId: 'session-1', sawJson: true }),
+    },
+    resolveThreadId: () => ({
+      threadKey: 'chat:root:gemini',
+      threadId: '',
+      migrated: false,
+    }),
+    buildGeminiPrompt: (prompt, imagePaths, scriptContext, documentPaths) =>
+      JSON.stringify({ prompt, imagePaths, scriptContext, documentPaths }),
+    buildPrompt: () => {
+      throw new Error('generic buildPrompt should not run for Gemini');
+    },
+    runGeminiAcpTurn: async (request) => {
+      geminiRequests.push(request);
+      return {
+        text: 'respuesta gemini',
+        threadId: 'session-1',
+      };
+    },
+  });
+
+  const text = await harness.runner.runAgentForChat(1, 'Resume esto', {
+    imagePaths: ['/tmp/image.png'],
+    documentPaths: ['/tmp/doc.pdf'],
+    scriptContext: 'salida comando',
+  });
+
+  assert.equal(text, 'respuesta gemini');
+  assert.equal(harness.getGeminiPromptCalls(), 1);
+  assert.equal(harness.getLastBuildPromptArgs(), null);
+  assert.deepEqual(harness.getLastBuildGeminiPromptArgs(), [
+    'Resume esto',
+    ['/tmp/image.png'],
+    'salida comando',
+    ['/tmp/doc.pdf'],
+  ]);
+  assert.equal(geminiRequests.length, 1);
 });

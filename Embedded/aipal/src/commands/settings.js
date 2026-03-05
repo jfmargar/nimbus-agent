@@ -25,6 +25,7 @@ const RESERVED_MENU_LABELS = new Set([
   'project',
   'sesiones',
   'reanudar última',
+  'seguir sesión activa',
   'ocultar teclado',
   'buscar',
   'anterior',
@@ -347,6 +348,7 @@ function registerSettingsCommands(options) {
     getAgent,
     getAgentLabel,
     getAgentOverride,
+    getActiveTurn,
     getGlobalAgent,
     getGlobalAgentCwd,
     getGlobalModels,
@@ -358,8 +360,10 @@ function registerSettingsCommands(options) {
     getTopicId,
     isKnownAgent,
     isModelResetCommand,
+    lockedAgentId,
     normalizeAgent,
     normalizeTopicId,
+    followActiveTurn,
     resolveThreadId,
     persistAgentOverrides,
     persistMemory,
@@ -405,7 +409,48 @@ function registerSettingsCommands(options) {
   }
 
   function effectiveAgentFor(chatId, topicId) {
+    if (lockedAgentId) return lockedAgentId;
     return getAgentOverride(chatId, topicId) || getGlobalAgent();
+  }
+
+  function shouldUseAgentProgress(effectiveAgentId) {
+    return (
+      typeof beginProgress === 'function' &&
+      ((effectiveAgentId === 'codex' && codexProgressUpdatesEnabled) ||
+        effectiveAgentId === 'gemini' ||
+        effectiveAgentId === 'opencode')
+    );
+  }
+
+  function getProgressInitialText(effectiveAgentId, initialText) {
+    if (String(initialText || '').trim()) {
+      return String(initialText).trim();
+    }
+    if (effectiveAgentId === 'gemini') return 'Gemini: iniciando sesión...';
+    if (effectiveAgentId === 'opencode') return 'Opencode: iniciando sesión...';
+    return 'Codex: iniciando sesion...';
+  }
+
+  function getProgressFailureText(effectiveAgentId) {
+    if (effectiveAgentId === 'gemini') return 'Gemini: error durante la ejecución.';
+    if (effectiveAgentId === 'opencode') return 'Opencode: error durante la ejecución.';
+    return 'Codex: error durante la ejecucion.';
+  }
+
+  function shouldShowMainMenuKeyboard() {
+    return lockedAgentId !== 'opencode' && lockedAgentId !== 'gemini';
+  }
+
+  function buildMainMenuReplyOptions(chatId, topicId) {
+    if (!shouldShowMainMenuKeyboard()) return {};
+    const effectiveAgentId = effectiveAgentFor(chatId, topicId);
+    const includeFollow =
+      effectiveAgentId === 'codex' &&
+      typeof getActiveTurn === 'function' &&
+      Boolean(getActiveTurn(chatId, topicId, effectiveAgentId)?.status === 'running');
+    return {
+      reply_markup: buildMainMenuKeyboard({ includeFollow }),
+    };
   }
 
   async function resolveProjectForContext(chatId, topicId, agentId) {
@@ -454,10 +499,7 @@ function registerSettingsCommands(options) {
   }
 
   async function createExecutionFeedback(ctx, effectiveAgentId, initialText) {
-    const useProgress =
-      codexProgressUpdatesEnabled &&
-      effectiveAgentId === 'codex' &&
-      typeof beginProgress === 'function';
+    const useProgress = shouldUseAgentProgress(effectiveAgentId);
     if (!useProgress) {
       return {
         onEvent: undefined,
@@ -467,11 +509,15 @@ function registerSettingsCommands(options) {
     }
     const progress = await beginProgress(
       ctx,
-      String(initialText || 'Codex: iniciando sesion...').trim()
+      getProgressInitialText(effectiveAgentId, initialText)
     );
     return {
       onEvent: async (event) => {
-        if (!progress || event?.type === 'output_text') return;
+        if (!progress) return;
+        if (typeof progress.updateEvent === 'function') {
+          await progress.updateEvent(event);
+          return;
+        }
         const message = renderProgressEvent(event);
         if (message) {
           await progress.update(message);
@@ -488,9 +534,7 @@ function registerSettingsCommands(options) {
     if (chatId) {
       setMainMenuState(chatId, topicId);
     }
-    await ctx.reply('Menú principal:', {
-      reply_markup: buildMainMenuKeyboard(),
-    });
+    await ctx.reply('Menú principal:', buildMainMenuReplyOptions(chatId, topicId));
   }
 
   async function openProjectsMenu(ctx, options = {}) {
@@ -697,9 +741,10 @@ function registerSettingsCommands(options) {
       console.warn('Failed to persist threads after resuming last session:', err)
     );
     setMainMenuState(chatId, topicId);
-    await ctx.reply(`Sesión reanudada: ${sessionId}`, {
-      reply_markup: buildMainMenuKeyboard(),
-    });
+    await ctx.reply(
+      `Sesión reanudada: ${sessionId}`,
+      buildMainMenuReplyOptions(chatId, topicId)
+    );
   }
 
   async function openSessionsMenu(ctx, options = {}) {
@@ -814,9 +859,7 @@ function registerSettingsCommands(options) {
     const lines = [`Sesión conectada: ${selected.id}`];
     if (cwd) lines.push(`Proyecto activo: ${projectNameFromCwd(cwd)}`);
     if (preview) lines.push(`Último mensaje: ${preview.slice(0, 240)}`);
-    await ctx.reply(lines.join('\n'), {
-      reply_markup: buildMainMenuKeyboard(),
-    });
+    await ctx.reply(lines.join('\n'), buildMainMenuReplyOptions(chatId, topicId));
   }
 
   async function createNewSessionFromState(ctx, state) {
@@ -861,6 +904,7 @@ function registerSettingsCommands(options) {
         topicId,
         thinkingOverride: 'minimal',
         waitForInteractiveCompletion: true,
+        forceNewSession: true,
       });
       feedback.stopTyping();
       if (feedback.progress) {
@@ -871,9 +915,7 @@ function registerSettingsCommands(options) {
         : `Sesion creada y conectada en ${projectNameFromCwd(
             cwd
           )}.\nEscribe tu primera solicitud.`;
-      await ctx.reply(replyText, {
-        reply_markup: buildMainMenuKeyboard(),
-      });
+      await ctx.reply(replyText, buildMainMenuReplyOptions(chatId, topicId));
     } catch (err) {
       console.error(err);
       feedback.stopTyping();
@@ -961,6 +1003,16 @@ function registerSettingsCommands(options) {
     const topicId = getTopicId(ctx);
     const normalizedTopic = normalizeTopicId(topicId);
 
+    if (lockedAgentId) {
+      const label = getAgentLabel(lockedAgentId);
+      if (!value) {
+        ctx.reply(`Current agent (${normalizedTopic}): ${label}. This bot is locked to ${label}.`);
+        return;
+      }
+      ctx.reply(`This bot is locked to ${label}. \`/agent\` is disabled here.`);
+      return;
+    }
+
     if (!value) {
       const effective =
         getAgentOverride(ctx.chat.id, topicId) || getGlobalAgent();
@@ -990,7 +1042,7 @@ function registerSettingsCommands(options) {
     }
 
     if (!isKnownAgent(value)) {
-      ctx.reply('Unknown agent. Use /agent codex|claude|gemini|opencode.');
+      ctx.reply('Unknown agent. Use /agent gemini|codex|claude|opencode.');
       return;
     }
 
@@ -1231,7 +1283,26 @@ function registerSettingsCommands(options) {
       await denySensitiveCommand(ctx);
       return;
     }
+    if (lockedAgentId === 'gemini') {
+      await ctx.reply(
+        'Este bot Gemini funciona en modo chat sin teclado. Envía tu mensaje directamente.'
+      );
+      return;
+    }
     await openMainMenu(ctx);
+  });
+
+  bot.command('follow', async (ctx) => {
+    if (!canUseSensitiveCommands()) {
+      await denySensitiveCommand(ctx);
+      return;
+    }
+    try {
+      await followActiveTurn(ctx);
+    } catch (err) {
+      console.error(err);
+      await replyWithError(ctx, 'No pude seguir la sesión activa.', err);
+    }
   });
 
   bot.hears(/^ocultar teclado$/i, async (ctx) => {
@@ -1281,6 +1352,19 @@ function registerSettingsCommands(options) {
     } catch (err) {
       console.error(err);
       await replyWithError(ctx, 'No pude reanudar la última sesión.', err);
+    }
+  });
+
+  bot.hears(/^seguir sesión activa$/i, async (ctx) => {
+    if (!canUseSensitiveCommands()) {
+      await denySensitiveCommand(ctx);
+      return;
+    }
+    try {
+      await followActiveTurn(ctx);
+    } catch (err) {
+      console.error(err);
+      await replyWithError(ctx, 'No pude seguir la sesión activa.', err);
     }
   });
 
@@ -1625,7 +1709,7 @@ function registerSettingsCommands(options) {
         console.error(err);
         feedback.stopTyping();
         if (feedback.progress) {
-          await feedback.progress.fail('Codex: error durante la ejecucion.');
+          await feedback.progress.fail(getProgressFailureText(effectiveAgentId));
         }
         menuNavCache.set(key, restoreState);
         await replyWithError(ctx, 'No pude crear la sesión de Codex ni enviar tu primera solicitud.', err);

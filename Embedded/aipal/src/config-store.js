@@ -3,13 +3,18 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs/promises');
 
-const XDG_CONFIG_HOME = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
-const CONFIG_PATH = path.join(XDG_CONFIG_HOME, 'aipal', 'config.json');
-const CONFIG_DIR = path.dirname(CONFIG_PATH);
+const XDG_CONFIG_HOME =
+  process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+const STATE_HOME = process.env.AIPAL_STATE_HOME
+  ? path.resolve(process.env.AIPAL_STATE_HOME)
+  : path.join(XDG_CONFIG_HOME, 'aipal');
+const CONFIG_DIR = STATE_HOME;
+const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 const MEMORY_PATH = path.join(CONFIG_DIR, 'memory.md');
 const SOUL_PATH = path.join(CONFIG_DIR, 'soul.md');
 const TOOLS_PATH = path.join(CONFIG_DIR, 'tools.md');
 const THREADS_PATH = path.join(CONFIG_DIR, 'threads.json');
+const ACTIVE_TURNS_PATH = path.join(CONFIG_DIR, 'active_turns.json');
 const AGENT_OVERRIDES_PATH = path.join(CONFIG_DIR, 'agent-overrides.json');
 const PROJECT_OVERRIDES_PATH = path.join(CONFIG_DIR, 'project-overrides.json');
 
@@ -99,6 +104,27 @@ async function saveThreads(threads) {
   await fs.rename(tmpPath, THREADS_PATH);
 }
 
+async function loadActiveTurns() {
+  try {
+    const raw = await fs.readFile(ACTIVE_TURNS_PATH, 'utf8');
+    if (!raw.trim()) return new Map();
+    const obj = JSON.parse(raw);
+    return new Map(Object.entries(obj));
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return new Map();
+    console.warn('Failed to load active_turns.json:', err);
+    return new Map();
+  }
+}
+
+async function saveActiveTurns(activeTurns) {
+  await fs.mkdir(CONFIG_DIR, { recursive: true });
+  const obj = Object.fromEntries(activeTurns);
+  const tmpPath = `${ACTIVE_TURNS_PATH}.${randomUUID()}.tmp`;
+  await fs.writeFile(tmpPath, JSON.stringify(obj, null, 2));
+  await fs.rename(tmpPath, ACTIVE_TURNS_PATH);
+}
+
 async function loadAgentOverrides() {
   try {
     const raw = await fs.readFile(AGENT_OVERRIDES_PATH, 'utf8');
@@ -144,12 +170,15 @@ async function saveProjectOverrides(overrides) {
 module.exports = {
   CONFIG_DIR,
   CONFIG_PATH,
+  STATE_HOME,
   MEMORY_PATH,
   SOUL_PATH,
   TOOLS_PATH,
   THREADS_PATH,
+  ACTIVE_TURNS_PATH,
   AGENT_OVERRIDES_PATH,
   PROJECT_OVERRIDES_PATH,
+  loadActiveTurns,
   loadThreads,
   loadAgentOverrides,
   loadProjectOverrides,
@@ -157,6 +186,7 @@ module.exports = {
   readMemory,
   readSoul,
   readTools,
+  saveActiveTurns,
   saveThreads,
   saveAgentOverrides,
   saveProjectOverrides,

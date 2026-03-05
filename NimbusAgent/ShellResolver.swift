@@ -1,6 +1,9 @@
 import Foundation
 
 enum ShellResolver {
+    private static let shellRecordSeparator = "\u{1E}"
+    private static let shellFieldSeparator = "\u{1F}"
+
     private static var userPaths: [String] {
         let home = NSHomeDirectory()
         return [
@@ -57,11 +60,53 @@ enum ShellResolver {
         return merged.joined(separator: ":")
     }
 
-    static func expandHome(_ value: String) -> String {
+    static func interactiveShellEnvironment(variableNames: [String]) -> [String: String] {
+        let names = deduplicate(
+            variableNames
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        guard !names.isEmpty else { return [:] }
+
+        let joinedNames = names.joined(separator: " ")
+        let script = """
+        emulate -L zsh
+        for name in \(joinedNames); do
+          eval "value=\\${$name-}"
+          printf '%s\(shellFieldSeparator)%s\(shellRecordSeparator)' "$name" "$value"
+        done
+        """
+
+        guard let data = runShellCommandData(["-ilc", script]),
+              let raw = String(data: data, encoding: .utf8) else {
+            return [:]
+        }
+
+        var result: [String: String] = [:]
+        for record in raw.split(separator: Character(shellRecordSeparator), omittingEmptySubsequences: true) {
+            let parts = record.split(separator: Character(shellFieldSeparator), maxSplits: 1, omittingEmptySubsequences: false)
+            guard let first = parts.first else { continue }
+            let key = String(first)
+            let value = parts.count > 1 ? String(parts[1]) : ""
+            guard !key.isEmpty else { continue }
+            result[key] = value
+        }
+        return result
+    }
+
+    nonisolated static func expandHome(_ value: String) -> String {
         NSString(string: value).expandingTildeInPath
     }
 
     private static func runShellCommand(_ args: [String]) -> String? {
+        guard let data = runShellCommandData(args) else {
+            return nil
+        }
+        let output = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return output.isEmpty ? nil : output
+    }
+
+    private static func runShellCommandData(_ args: [String]) -> Data? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = args
@@ -81,9 +126,7 @@ enum ShellResolver {
             return nil
         }
 
-        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return output.isEmpty ? nil : output
+        return outputPipe.fileHandleForReading.readDataToEndOfFile()
     }
 
     private static func searchInPath(_ command: String, pathValue: String) -> String? {
@@ -100,7 +143,7 @@ enum ShellResolver {
         return nil
     }
 
-    private static func splitPath(_ value: String) -> [String] {
+    nonisolated private static func splitPath(_ value: String) -> [String] {
         value
             .split(separator: ":")
             .map(String.init)
@@ -108,7 +151,7 @@ enum ShellResolver {
             .filter { !$0.isEmpty }
     }
 
-    private static func deduplicate(_ values: [String]) -> [String] {
+    nonisolated private static func deduplicate(_ values: [String]) -> [String] {
         var seen = Set<String>()
         var result: [String] = []
         for value in values {

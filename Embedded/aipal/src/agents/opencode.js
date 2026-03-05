@@ -96,6 +96,8 @@ module.exports = {
   label: 'opencode',
   needsPty: false,
   mergeStderr: false,
+  shellExecutable: '/bin/zsh',
+  shellArguments: ['-ilc'],
   buildCommand,
   parseOutput,
   listModelsCommand,

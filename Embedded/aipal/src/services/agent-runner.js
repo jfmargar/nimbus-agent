@@ -35,9 +35,28 @@ function normalizeDateInput(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+async function buildGeminiProjectBootstrap(cwd) {
+  const normalizedCwd = normalizeProjectCwd(cwd);
+  if (!normalizedCwd) return '';
+  const geminiMdPath = path.join(normalizedCwd, 'GEMINI.md');
+  try {
+    const stat = await fs.stat(geminiMdPath);
+    if (!stat.isFile()) return '';
+    return [
+      'Session bootstrap:',
+      `Antes de responder en esta sesión, lee ${geminiMdPath} y úsalo como contexto del proyecto.`,
+    ].join('\n');
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return '';
+    console.warn('Failed to inspect GEMINI.md bootstrap file:', err);
+    return '';
+  }
+}
+
 function createAgentRunner(options) {
   const {
     agentMaxBuffer,
+    buildGeminiPrompt,
     agentTimeoutMs,
     buildBootstrapContext,
     buildMemoryRetrievalContext,
@@ -45,6 +64,7 @@ function createAgentRunner(options) {
     buildSharedSessionPrompt,
     codexApprovalMode,
     codexSandboxMode,
+    clearActiveTurn,
     createCodexSdkClient = defaultCreateCodexSdkClient,
     documentDir,
     execLocal,
@@ -53,6 +73,7 @@ function createAgentRunner(options) {
     findNewestSessionDiff,
     getAgent,
     getAgentLabel,
+    getActiveTurn,
     getGlobalAgent,
     getGlobalModels,
     getGlobalThinking,
@@ -64,6 +85,7 @@ function createAgentRunner(options) {
     listSqliteCodexThreads,
     memoryRetrievalLimit,
     persistProjectOverrides,
+    persistActiveTurns,
     persistThreads,
     prefixTextWithTimestamp,
     resolveAgentProjectCwd,
@@ -71,10 +93,12 @@ function createAgentRunner(options) {
     resolveThreadId,
     shellQuote,
     setProjectForAgent,
+    setActiveTurn,
     threadTurns,
     defaultTimeZone,
     getDefaultAgentCwd,
     listLocalCodexSessions,
+    runGeminiAcpTurn,
     wrapCommandWithPty,
   } = options;
   const interactiveNewSessionTimeoutMs = Math.min(agentTimeoutMs, 45000);
@@ -85,8 +109,94 @@ function createAgentRunner(options) {
   const codexSdkClient = createCodexSdkClient({
     agentTimeoutMs,
     approvalMode: codexApprovalMode,
+    getLocalCodexSessionMeta,
     sandboxMode: codexSandboxMode,
   });
+
+  async function persistActiveTurnState() {
+    if (typeof persistActiveTurns === 'function') {
+      await persistActiveTurns();
+    }
+  }
+
+  async function upsertActiveTurn({
+    chatId,
+    topicId,
+    effectiveAgentId,
+    threadId,
+    startedAt,
+    status = 'running',
+    source = 'telegram_turn',
+    sessionFilePath,
+    lastObservedTimestamp,
+  }) {
+    if (typeof setActiveTurn !== 'function') return null;
+    const next = setActiveTurn(chatId, topicId, effectiveAgentId, {
+      threadId,
+      startedAt,
+      status,
+      source,
+      sessionFilePath,
+      lastObservedTimestamp,
+    });
+    if (next) {
+      await persistActiveTurnState();
+    }
+    return next;
+  }
+
+  async function clearRunningActiveTurn(chatId, topicId, effectiveAgentId) {
+    if (typeof clearActiveTurn !== 'function') return;
+    const cleared = clearActiveTurn(chatId, topicId, effectiveAgentId);
+    if (cleared) {
+      await persistActiveTurnState();
+    }
+  }
+
+  async function enrichActiveTurnSessionFilePath(
+    chatId,
+    topicId,
+    effectiveAgentId,
+    threadId,
+    startedAt
+  ) {
+    if (typeof getLocalCodexSessionMeta !== 'function') return null;
+    try {
+      if (typeof getActiveTurn === 'function') {
+        const current = getActiveTurn(chatId, topicId, effectiveAgentId);
+        if (
+          !current ||
+          current.status !== 'running' ||
+          String(current.threadId || '').trim() !== String(threadId || '').trim()
+        ) {
+          return null;
+        }
+      }
+      const meta = await getLocalCodexSessionMeta(threadId);
+      if (typeof getActiveTurn === 'function') {
+        const current = getActiveTurn(chatId, topicId, effectiveAgentId);
+        if (
+          !current ||
+          current.status !== 'running' ||
+          String(current.threadId || '').trim() !== String(threadId || '').trim()
+        ) {
+          return null;
+        }
+      }
+      return upsertActiveTurn({
+        chatId,
+        topicId,
+        effectiveAgentId,
+        threadId,
+        startedAt,
+        status: 'running',
+        source: 'telegram_turn',
+        sessionFilePath: String(meta?.filePath || '').trim(),
+      });
+    } catch {
+      return null;
+    }
+  }
 
   async function resolveLatestCodexSessionId(cwd, sessionFilter = {}) {
     if (typeof listLocalCodexSessions !== 'function') return '';
@@ -151,6 +261,18 @@ function createAgentRunner(options) {
       (typeof getDefaultAgentCwd === 'function' ? getDefaultAgentCwd() : undefined);
     if (!cwd) return base;
     return { ...base, cwd };
+  }
+
+  function resolveShellExecution(agent, command) {
+    const shellExecutable = String(agent?.shellExecutable || '').trim() || 'bash';
+    const shellArguments =
+      Array.isArray(agent?.shellArguments) && agent.shellArguments.length
+        ? [...agent.shellArguments]
+        : ['-lc'];
+    return {
+      shellExecutable,
+      shellArguments: [...shellArguments, command],
+    };
   }
 
   function isSharedCodexSession(agent) {
@@ -674,6 +796,21 @@ function createAgentRunner(options) {
       executionCwd,
       threads,
     });
+    await upsertActiveTurn({
+      chatId,
+      topicId,
+      effectiveAgentId,
+      threadId: candidateId,
+      startedAt: new Date(startedAt).toISOString(),
+      status: 'running',
+    });
+    enrichActiveTurnSessionFilePath(
+      chatId,
+      topicId,
+      effectiveAgentId,
+      candidateId,
+      new Date(startedAt).toISOString()
+    ).catch(() => {});
 
     if (waitForInteractiveCompletion && !backgroundInteractiveCleanup) {
       const turnState = await waitForPersistedCodexTurnCompletion({
@@ -708,6 +845,7 @@ function createAgentRunner(options) {
           };
         })
         .finally(() => {
+          clearRunningActiveTurn(chatId, topicId, effectiveAgentId).catch(() => {});
           if (pendingCodexInitializations.get(threadKey) === trackedCleanupPromise) {
             pendingCodexInitializations.delete(threadKey);
           }
@@ -734,6 +872,7 @@ function createAgentRunner(options) {
         } timeoutMs=${interactiveNewSessionTimeoutMs}`
       );
     }
+    await clearRunningActiveTurn(chatId, topicId, effectiveAgentId);
     return {
       text: buildSessionCreationReply({
         executionCwd,
@@ -775,6 +914,24 @@ function createAgentRunner(options) {
     );
 
     const startedAt = Date.now();
+    const startedAtIso = new Date(startedAt).toISOString();
+    if (normalizedThreadId) {
+      await upsertActiveTurn({
+        chatId,
+        topicId,
+        effectiveAgentId,
+        threadId: normalizedThreadId,
+        startedAt: startedAtIso,
+        status: 'running',
+      });
+      enrichActiveTurnSessionFilePath(
+        chatId,
+        topicId,
+        effectiveAgentId,
+        normalizedThreadId,
+        startedAtIso
+      ).catch(() => {});
+    }
     let result;
     try {
       result = await codexSdkClient.runTurn({
@@ -801,6 +958,9 @@ function createAgentRunner(options) {
         timeoutMs: agentTimeoutMs,
       });
     } finally {
+      if (!result?.threadId && normalizedThreadId) {
+        await clearRunningActiveTurn(chatId, topicId, effectiveAgentId);
+      }
       const elapsedMs = Date.now() - startedAt;
       console.info(
         `Agent finished chat=${chatId} topic=${topicId || 'root'} durationMs=${elapsedMs} mode=sdk`
@@ -847,13 +1007,32 @@ function createAgentRunner(options) {
       executionCwd,
       threads,
     });
-
-    return {
-      ...result,
+    await upsertActiveTurn({
+      chatId,
+      topicId,
+      effectiveAgentId,
       threadId: candidateId,
-      conversationId: String(result?.conversationId || candidateId).trim() || candidateId,
-      text: String(result?.text || '').trim(),
-    };
+      startedAt: startedAtIso,
+      status: 'running',
+    });
+    enrichActiveTurnSessionFilePath(
+      chatId,
+      topicId,
+      effectiveAgentId,
+      candidateId,
+      startedAtIso
+    ).catch(() => {});
+
+    try {
+      return {
+        ...result,
+        threadId: candidateId,
+        conversationId: String(result?.conversationId || candidateId).trim() || candidateId,
+        text: String(result?.text || '').trim(),
+      };
+    } finally {
+      await clearRunningActiveTurn(chatId, topicId, effectiveAgentId);
+    }
   }
 
   async function runAgentOneShot(prompt) {
@@ -904,7 +1083,11 @@ function createAgentRunner(options) {
     let output;
     let execError;
     try {
-      output = await execLocal('bash', ['-lc', commandToRun], {
+      const { shellExecutable, shellArguments } = resolveShellExecution(
+        agent,
+        commandToRun
+      );
+      output = await execLocal(shellExecutable, shellArguments, {
         ...buildExecOptions(),
         timeout: agentTimeoutMs,
         maxBuffer: agentMaxBuffer,
@@ -944,6 +1127,7 @@ function createAgentRunner(options) {
       thinkingOverride,
       waitForInteractiveCompletion = false,
       backgroundInteractiveCleanup = false,
+      forceNewSession = false,
     } = runOptions;
     const effectiveAgentId = resolveEffectiveAgentId(
       chatId,
@@ -961,19 +1145,51 @@ function createAgentRunner(options) {
     });
 
     const threads = getThreads();
-    const { threadKey, threadId, migrated } = resolveThreadId(
+    const { threadKey, threadId: resolvedThreadId, migrated } = resolveThreadId(
       threads,
       chatId,
       topicId,
       effectiveAgentId
     );
+    const isGeminiStateless = agent.id === 'gemini';
+    const threadId = isGeminiStateless
+      ? ''
+      : String(resolvedThreadId || '').trim();
+    let shouldPersistThreadsAfterResolve = Boolean(migrated);
+    if (isGeminiStateless && threads.delete(threadKey)) {
+      shouldPersistThreadsAfterResolve = true;
+    }
+    const activeTurn =
+      typeof getActiveTurn === 'function'
+        ? getActiveTurn(chatId, topicId, effectiveAgentId)
+        : null;
+    if (
+      forceNewSession &&
+      agent.id === 'codex' &&
+      activeTurn?.status === 'running' &&
+      activeTurn.threadId &&
+      (!threadId || String(activeTurn.threadId).trim() === String(threadId || '').trim())
+    ) {
+      await clearRunningActiveTurn(chatId, topicId, effectiveAgentId);
+    }
+    if (
+      agent.id === 'codex' &&
+      !forceNewSession &&
+      activeTurn?.status === 'running' &&
+      activeTurn.threadId &&
+      (!threadId || String(activeTurn.threadId).trim() === String(threadId || '').trim())
+    ) {
+      throw new Error(
+        'Esta sesión aún está procesando una tarea. Usa /follow para seguirla o espera a que termine.'
+      );
+    }
     const turnCount = (threadTurns.get(threadKey) || 0) + 1;
     threadTurns.set(threadKey, turnCount);
     const shouldIncludeFileInstructions =
       !threadId || turnCount % fileInstructionsEvery === 0;
-    if (migrated) {
+    if (shouldPersistThreadsAfterResolve) {
       persistThreads().catch((err) =>
-        console.warn('Failed to persist migrated threads:', err)
+        console.warn('Failed to persist resolved thread state:', err)
       );
     }
 
@@ -1007,12 +1223,19 @@ function createAgentRunner(options) {
       });
     }
     if (!threadId && !sharedCodexSession) {
-      const bootstrap = await buildBootstrapContext({ threadKey });
-      promptWithContext = promptWithContext
-        ? `${bootstrap}\n\n${promptWithContext}`
-        : bootstrap;
+      const bootstrap =
+        agent.id === 'gemini'
+          ? await buildGeminiProjectBootstrap(executionCwd)
+          : await buildBootstrapContext({ threadKey });
+      if (bootstrap) {
+        promptWithContext = promptWithContext
+          ? `${bootstrap}\n\n${promptWithContext}`
+          : bootstrap;
+      }
     }
-    if (!sharedCodexSession) {
+    const shouldRetrieveMemory =
+      !sharedCodexSession && agent.id !== 'gemini';
+    if (shouldRetrieveMemory) {
       const retrievalContext = await buildMemoryRetrievalContext({
         query: prompt,
         chatId,
@@ -1028,22 +1251,30 @@ function createAgentRunner(options) {
     }
 
     const thinking = String(thinkingOverride || '').trim() || getGlobalThinking();
-    const finalPrompt = sharedCodexSession
-      ? buildSharedSessionPrompt(
-          promptWithContext,
-          imagePaths || [],
-          scriptContext,
-          documentPaths || []
-        )
-      : buildPrompt(
-          promptWithContext,
-          imagePaths || [],
-          imageDir,
-          scriptContext,
-          documentPaths || [],
-          documentDir,
-          { includeFileInstructions: shouldIncludeFileInstructions }
-        );
+    const finalPrompt =
+      agent.id === 'gemini'
+        ? buildGeminiPrompt(
+            promptWithContext,
+            imagePaths || [],
+            scriptContext,
+            documentPaths || []
+          )
+        : sharedCodexSession
+          ? buildSharedSessionPrompt(
+              promptWithContext,
+              imagePaths || [],
+              scriptContext,
+              documentPaths || []
+            )
+          : buildPrompt(
+              promptWithContext,
+              imagePaths || [],
+              imageDir,
+              scriptContext,
+              documentPaths || [],
+              documentDir,
+              { includeFileInstructions: shouldIncludeFileInstructions }
+            );
     if (!String(finalPrompt || '').trim()) {
       throw new Error(
         'No encontré contenido útil para enviar a Codex en este turno.'
@@ -1089,6 +1320,20 @@ function createAgentRunner(options) {
       };
     }
 
+    if (agent.id === 'gemini' && typeof runGeminiAcpTurn === 'function') {
+      const result = await runGeminiAcpTurn({
+        cwd: executionCwd,
+        prompt: finalPrompt,
+        threadId: undefined,
+        model,
+        onEvent,
+        onApprovalRequest: runOptions.onApprovalRequest,
+      });
+      return {
+        text: result.text,
+      };
+    }
+
     const promptBase64 = Buffer.from(finalPrompt, 'utf8').toString('base64');
     const promptExpression = '"$PROMPT"';
     const agentCmd = agent.buildCommand({
@@ -1118,7 +1363,11 @@ function createAgentRunner(options) {
     let output;
     let execError;
     try {
-      output = await execLocal('bash', ['-lc', commandToRun], {
+      const { shellExecutable, shellArguments } = resolveShellExecution(
+        agent,
+        commandToRun
+      );
+      output = await execLocal(shellExecutable, shellArguments, {
         ...buildExecOptions({}, executionCwd),
         timeout: agentTimeoutMs,
         maxBuffer: agentMaxBuffer,
@@ -1158,7 +1407,11 @@ function createAgentRunner(options) {
         if (agent.mergeStderr) {
           listCommandToRun = `${listCommandToRun} 2>&1`;
         }
-        const listOutput = await execLocal('bash', ['-lc', listCommandToRun], {
+        const { shellExecutable, shellArguments } = resolveShellExecution(
+          agent,
+          listCommandToRun
+        );
+        const listOutput = await execLocal(shellExecutable, shellArguments, {
           ...buildExecOptions(),
           timeout: agentTimeoutMs,
           maxBuffer: agentMaxBuffer,
@@ -1196,6 +1449,7 @@ function createAgentRunner(options) {
     runAgentForChat,
     runAgentTurnForChat,
     runAgentOneShot,
+    runCodexNewSessionInteractive,
   };
 }
 

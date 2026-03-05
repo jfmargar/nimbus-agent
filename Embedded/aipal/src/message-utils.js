@@ -332,6 +332,47 @@ function buildPrompt(
   return lines.join('\n');
 }
 
+function buildGeminiPrompt(
+  prompt,
+  imagePaths = [],
+  scriptContext = '',
+  documentPaths = []
+) {
+  const lines = [
+    'Responde para Telegram con un mensaje final claro y directo. No incluyas razonamiento interno.',
+  ];
+
+  const context = String(scriptContext || '').trim();
+  if (context) {
+    lines.push('Context from last slash command output:');
+    lines.push(context);
+    lines.push('End of slash command output.');
+  }
+
+  const trimmed = String(prompt || '').trim();
+  if (trimmed) {
+    lines.push(trimmed);
+  }
+
+  if (imagePaths.length > 0) {
+    lines.push('User sent image file(s):');
+    for (const imagePath of imagePaths) {
+      lines.push(`- ${imagePath}`);
+    }
+    lines.push('Read images from those paths if needed.');
+  }
+
+  if (documentPaths.length > 0) {
+    lines.push('User sent document file(s):');
+    for (const documentPath of documentPaths) {
+      lines.push(`- ${documentPath}`);
+    }
+    lines.push('Read documents from those paths if needed.');
+  }
+
+  return lines.join('\n').trim();
+}
+
 function buildSharedSessionPrompt(
   prompt,
   imagePaths = [],
@@ -385,6 +426,7 @@ module.exports = {
   isPathInside,
   extractImageTokens,
   extractDocumentTokens,
+  buildGeminiPrompt,
   buildPrompt,
   buildSharedSessionPrompt,
 };

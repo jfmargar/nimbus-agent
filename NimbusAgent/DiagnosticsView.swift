@@ -6,32 +6,82 @@ struct DiagnosticsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            GroupBox("Resumen") {
+                HStack(spacing: 12) {
+                    ForEach(NimbusBot.allCases) { bot in
+                        summaryCard(for: bot)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            TabView {
+                ForEach(NimbusBot.allCases) { bot in
+                    diagnosticsPane(for: bot)
+                        .tabItem { Label(bot.label, systemImage: bot == .codex ? "bolt.circle" : "sparkles") }
+                }
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 760, minHeight: 560)
+    }
+
+    private func summaryCard(for bot: NimbusBot) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: model.statusIconName(for: bot))
+                    .foregroundStyle(model.statusColor(for: bot))
+                Text(bot.label)
+                    .font(.headline)
+            }
+            Text(model.runState(for: bot).label)
+                .font(.subheadline)
+            Text(model.preflightSummary(for: bot))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(model.hasToken(bot) ? "Token configurado" : "Falta token")
+                .font(.caption2)
+                .foregroundStyle(model.hasToken(bot) ? .green : .orange)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func diagnosticsPane(for bot: NimbusBot) -> some View {
+        let report = model.preflight(for: bot)
+
+        return VStack(alignment: .leading, spacing: 12) {
             GroupBox("Estado") {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Proceso: \(model.runState.label)")
+                    Text("Proceso: \(model.runState(for: bot).label)")
+                    Text("Última línea: \(model.latestLogLine(for: bot))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
-                    if !model.preflight.errors.isEmpty {
+                    if !report.errors.isEmpty {
                         Text("Errores preflight:")
                             .font(.headline)
-                        ForEach(model.preflight.errors, id: \.self) { item in
+                        ForEach(report.errors, id: \.self) { item in
                             Text("• \(item)")
                                 .foregroundStyle(.red)
                         }
                     }
 
-                    if !model.preflight.warnings.isEmpty {
+                    if !report.warnings.isEmpty {
                         Text("Warnings:")
                             .font(.headline)
-                        ForEach(model.preflight.warnings, id: \.self) { item in
+                        ForEach(report.warnings, id: \.self) { item in
                             Text("• \(item)")
                                 .foregroundStyle(.orange)
                         }
                     }
 
-                    if !model.preflight.details.isEmpty {
+                    if !report.details.isEmpty {
                         Text("Detalles:")
                             .font(.headline)
-                        ForEach(model.preflight.details, id: \.self) { item in
+                        ForEach(report.details, id: \.self) { item in
                             Text("• \(item)")
                                 .foregroundStyle(.secondary)
                         }
@@ -42,7 +92,7 @@ struct DiagnosticsView: View {
 
             GroupBox("Logs") {
                 ScrollView {
-                    Text(model.logs.joined(separator: "\n"))
+                    Text(model.logs(for: bot).joined(separator: "\n"))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                         .font(.system(.caption, design: .monospaced))
@@ -52,18 +102,14 @@ struct DiagnosticsView: View {
 
             HStack {
                 Button("Refrescar preflight") {
-                    model.refreshPreflight()
+                    model.refreshPreflight(for: bot)
                 }
                 Spacer()
                 Button("Copiar diagnóstico") {
-                    let payload = (["Estado: \(model.runState.label)"] + model.preflight.errors + model.preflight.warnings + model.preflight.details + model.logs)
-                        .joined(separator: "\n")
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(payload, forType: .string)
+                    NSPasteboard.general.setString(model.diagnosticsText(for: bot), forType: .string)
                 }
             }
         }
-        .padding(16)
-        .frame(minWidth: 700, minHeight: 520)
     }
 }

@@ -1,7 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { buildSharedSessionPrompt } = require('../src/message-utils');
+const {
+  buildGeminiPrompt,
+  buildSharedSessionPrompt,
+} = require('../src/message-utils');
 
 test('buildSharedSessionPrompt returns plain text when there is only user text', () => {
   assert.equal(buildSharedSessionPrompt('Hola'), 'Hola');
@@ -32,4 +35,17 @@ test('buildSharedSessionPrompt includes script context without bootstrap noise',
   assert.doesNotMatch(prompt, /Bootstrap config:/);
   assert.doesNotMatch(prompt, /Relevant memory retrieved:/);
   assert.doesNotMatch(prompt, /Output style for Telegram:/);
+});
+
+test('buildGeminiPrompt keeps a minimal Telegram wrapper', () => {
+  const prompt = buildGeminiPrompt('Prepara el informe');
+
+  assert.match(
+    prompt,
+    /^Responde para Telegram con un mensaje final claro y directo\. No incluyas razonamiento interno\./
+  );
+  assert.match(prompt, /Prepara el informe/);
+  assert.doesNotMatch(prompt, /Output style for Telegram:/);
+  assert.doesNotMatch(prompt, /If you generate an image/);
+  assert.doesNotMatch(prompt, /If you generate a document/);
 });

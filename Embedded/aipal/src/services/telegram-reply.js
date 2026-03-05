@@ -13,7 +13,8 @@ function createTelegramReplyService(options) {
     isPathInside,
     markdownToTelegramHtml,
   } = options;
-  const PROGRESS_UPDATE_INTERVAL_MS = 750;
+  const PROGRESS_UPDATE_INTERVAL_MS = 250;
+  const TEXTUAL_PROGRESS_SUPPRESSION_MS = 4000;
 
   async function replyWithError(ctx, label, err) {
     const detail = formatError(err);
@@ -41,6 +42,9 @@ function createTelegramReplyService(options) {
     if (typeof event.message === 'string' && event.message.trim()) {
       return event.message.trim();
     }
+    if (event.type === 'output_text' && typeof event.text === 'string') {
+      return summarizeProgressText(event.text);
+    }
     if (event.type === 'status' && event.phase) {
       return `Codex: ${event.phase}`;
     }
@@ -53,6 +57,44 @@ function createTelegramReplyService(options) {
     return '';
   }
 
+  function getProgressEventPriority(event) {
+    if (!event || typeof event !== 'object') return 'ignore';
+    if (event.type === 'error') return 'critical';
+    if (event.type === 'output_text' && typeof event.text === 'string' && event.text.trim()) {
+      return 'textual';
+    }
+    if (event.type === 'tool_activity') {
+      return 'fallback';
+    }
+    if (
+      event.type === 'status' &&
+      typeof event.message === 'string' &&
+      event.message.trim()
+    ) {
+      const message = event.message.trim();
+      if (event.source === 'session_feedback') return 'textual';
+      if (event.phase === 'running' && !/^Codex:\s/i.test(message)) {
+        return 'textual';
+      }
+      if (
+        event.phase === 'running' &&
+        (/^Codex plan/i.test(message) || /^Codex:\s*actualizando plan/i.test(message))
+      ) {
+        return 'textual';
+      }
+      return 'status';
+    }
+    return 'ignore';
+  }
+
+  function summarizeProgressText(text) {
+    const compact = String(text || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!compact) return '';
+    return compact.length > 800 ? `${compact.slice(0, 797)}...` : compact;
+  }
+
   async function beginProgress(ctx, initialText) {
     const message = await ctx.reply(String(initialText || 'Procesando...').trim());
     const chatId = ctx.chat?.id;
@@ -61,6 +103,9 @@ function createTelegramReplyService(options) {
     let pendingText = '';
     let flushTimer = null;
     let active = true;
+    let lastFlushAt = 0;
+    let flushInFlight = null;
+    let lastTextualEventAt = 0;
 
     async function flush(force = false) {
       if (!active || !chatId || !messageId) return;
@@ -72,34 +117,74 @@ function createTelegramReplyService(options) {
         clearTimeout(flushTimer);
         flushTimer = null;
       }
-      try {
-        await bot.telegram.editMessageText(chatId, messageId, undefined, nextText);
-        lastSentText = nextText;
-      } catch (err) {
-        const detail = String(err?.description || err?.message || '');
-        if (detail.includes('message is not modified')) {
+      if (flushInFlight) {
+        return flushInFlight;
+      }
+      flushInFlight = (async () => {
+        try {
+          await bot.telegram.editMessageText(chatId, messageId, undefined, nextText);
           lastSentText = nextText;
-          return;
+          lastFlushAt = Date.now();
+        } catch (err) {
+          const detail = String(err?.description || err?.message || '');
+          if (detail.includes('message is not modified')) {
+            lastSentText = nextText;
+            lastFlushAt = Date.now();
+            return;
+          }
+          console.warn('Progress update error', err);
+        } finally {
+          flushInFlight = null;
+          if (active && pendingText && pendingText !== lastSentText) {
+            scheduleFlush();
+          }
         }
-        console.warn('Progress update error', err);
+      })();
+      try {
+        await flushInFlight;
+      } catch {
+        // flushInFlight already logs failures.
       }
     }
 
-    function scheduleFlush() {
+    function scheduleFlush(delayMs = PROGRESS_UPDATE_INTERVAL_MS) {
       if (!active || flushTimer) return;
       flushTimer = setTimeout(() => {
         flush(true).catch((err) => {
           console.warn('Progress flush error', err);
         });
-      }, PROGRESS_UPDATE_INTERVAL_MS);
+      }, Math.max(0, delayMs));
     }
 
     return {
+      async updateEvent(event) {
+        const priority = getProgressEventPriority(event);
+        if (priority === 'ignore') return;
+        const now = Date.now();
+        if (
+          priority === 'fallback' &&
+          lastTextualEventAt > 0 &&
+          now - lastTextualEventAt < TEXTUAL_PROGRESS_SUPPRESSION_MS
+        ) {
+          return;
+        }
+        const message = renderProgressEvent(event);
+        if (!message) return;
+        if (priority === 'textual' || priority === 'critical') {
+          lastTextualEventAt = now;
+        }
+        await this.update(message);
+      },
       async update(text) {
         const nextText = String(text || '').trim();
         if (!nextText || nextText === lastSentText) return;
         pendingText = nextText;
-        scheduleFlush();
+        const elapsedMs = Date.now() - lastFlushAt;
+        if (!lastFlushAt || elapsedMs >= PROGRESS_UPDATE_INTERVAL_MS) {
+          await flush(true);
+          return;
+        }
+        scheduleFlush(PROGRESS_UPDATE_INTERVAL_MS - elapsedMs);
       },
       async finish() {
         if (!active) return;
@@ -107,6 +192,13 @@ function createTelegramReplyService(options) {
         if (flushTimer) {
           clearTimeout(flushTimer);
           flushTimer = null;
+        }
+        if (flushInFlight) {
+          try {
+            await flushInFlight;
+          } catch {
+            // flushInFlight already logs failures.
+          }
         }
         try {
           await bot.telegram.deleteMessage(chatId, messageId);
@@ -246,12 +338,14 @@ function createTelegramReplyService(options) {
 
   return {
     beginProgress,
+    getProgressEventPriority,
     replyWithError,
     replyWithResponse,
     renderProgressEvent,
     replyWithTranscript,
     sendResponseToChat,
     startTyping,
+    textualProgressSuppressionMs: TEXTUAL_PROGRESS_SUPPRESSION_MS,
   };
 }
 

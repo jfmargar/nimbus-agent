@@ -8,7 +8,7 @@ In this repository, this directory is the embedded Aipal runtime used by NimbusA
 
 If you are working on NimbusAgent as an app, prefer the top-level [README](../../README.md) for setup and operational guidance. The rest of this document is still the standalone bot documentation for running Aipal directly.
 
-Minimal Telegram bot that forwards messages to a local agent runtime (Codex by default). In Nimbus, Codex no longer runs only through raw CLI parsing: existing Codex sessions are resumed through the official Codex SDK, while new visible sessions still start through the interactive CLI path for Codex app compatibility.
+Minimal Telegram bot that forwards messages to a local agent runtime (Codex by default). In Nimbus, Codex no longer runs only through raw CLI parsing: existing Codex sessions are resumed through the official Codex SDK, while new visible sessions still start through the interactive CLI path for Codex app compatibility. Nimbus can also launch a second isolated Aipal process locked to `gemini`.
 
 ## What it does
 - Runs your configured local agent for every message
@@ -167,12 +167,15 @@ Optional:
 - `AIPAL_MEMORY_CURATE_EVERY`: auto-curate memory after N captured events (default: 20)
 - `AIPAL_MEMORY_RETRIEVAL_LIMIT`: max retrieved memory lines injected per request (default: 8)
 - `CODEX_HOME`: Codex home used to read/write shared sessions (default fallback: `~/.codex`)
+- `AIPAL_LOCKED_AGENT`: forces the runtime to a single agent and disables `/agent` switching (used by Nimbus for the Gemini bot)
 - `ALLOWED_USERS`: comma-separated list of Telegram user IDs allowed to interact with the bot (if unset/empty, bot is open to everyone)
   - Required for sensitive session/project commands (`/menu`, `/project`, `/projects`, `/sessions`, `/session`).
 
 ## Config file (optional)
 The bot stores `/agent` in a JSON file at:
 `~/.config/aipal/config.json` (or `$XDG_CONFIG_HOME/aipal/config.json`).
+
+When `AIPAL_LOCKED_AGENT` is set, that value takes precedence over `config.json` and topic overrides.
 
 Example:
 ```json

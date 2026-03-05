@@ -3,9 +3,42 @@ import Security
 
 final class SecretsStore {
     private let service = "com.jfmargar.nimbus.NimbusAgent"
-    private let account = "TELEGRAM_BOT_TOKEN"
+    private let legacyAccount = "TELEGRAM_BOT_TOKEN"
 
-    func readTelegramToken() -> String {
+    func readTelegramToken(for bot: NimbusBot) -> String {
+        let token = readToken(account: bot.tokenKeychainAccount)
+        if !token.isEmpty {
+            return token
+        }
+        if bot == .codex {
+            return readToken(account: legacyAccount)
+        }
+        return ""
+    }
+
+    func migrateLegacyCodexTokenIfNeeded() throws {
+        let current = readToken(account: NimbusBot.codex.tokenKeychainAccount)
+        if !current.isEmpty {
+            return
+        }
+        let legacy = readToken(account: legacyAccount)
+        if legacy.isEmpty {
+            return
+        }
+        try saveTelegramToken(legacy, for: .codex)
+        _ = deleteToken(account: legacyAccount)
+    }
+
+    func saveTelegramToken(_ token: String, for bot: NimbusBot) throws {
+        try saveToken(token, account: bot.tokenKeychainAccount)
+    }
+
+    @discardableResult
+    func deleteTelegramToken(for bot: NimbusBot) -> Bool {
+        deleteToken(account: bot.tokenKeychainAccount)
+    }
+
+    private func readToken(account: String) -> String {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
@@ -26,10 +59,10 @@ final class SecretsStore {
         return value
     }
 
-    func saveTelegramToken(_ token: String) throws {
+    private func saveToken(_ token: String, account: String) throws {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            _ = deleteTelegramToken()
+            _ = deleteToken(account: account)
             return
         }
 
@@ -69,7 +102,7 @@ final class SecretsStore {
     }
 
     @discardableResult
-    func deleteTelegramToken() -> Bool {
+    private func deleteToken(account: String) -> Bool {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,

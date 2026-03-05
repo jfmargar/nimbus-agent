@@ -13,6 +13,7 @@ const {
   MEMORY_PATH,
   SOUL_PATH,
   TOOLS_PATH,
+  loadActiveTurns,
   loadAgentOverrides,
   loadProjectOverrides,
   loadThreads,
@@ -20,6 +21,7 @@ const {
   readMemory,
   readSoul,
   readTools,
+  saveActiveTurns,
   saveAgentOverrides,
   saveProjectOverrides,
   saveThreads,
@@ -35,6 +37,11 @@ const {
   getProjectOverride,
   setProjectOverride,
 } = require('./project-overrides');
+const {
+  clearActiveTurn,
+  getActiveTurn,
+  setActiveTurn,
+} = require('./active-turn-store');
 const {
   buildThreadKey,
   buildTopicKey,
@@ -72,6 +79,7 @@ const {
   isPathInside,
   extractImageTokens,
   extractDocumentTokens,
+  buildGeminiPrompt,
   chunkMarkdown,
   markdownToTelegramHtml,
   buildPrompt,
@@ -121,6 +129,7 @@ const {
   shellQuote,
   wrapCommandWithPty,
 } = require('./services/process');
+const { createGeminiAcpRunner } = require('./services/gemini-acp');
 const { createEnqueue } = require('./services/queue');
 const { createAgentRunner } = require('./services/agent-runner');
 const {
@@ -138,6 +147,10 @@ const { createFileService } = require('./services/files');
 const { createMemoryService } = require('./services/memory');
 const { createScriptService } = require('./services/scripts');
 const { createTelegramReplyService } = require('./services/telegram-reply');
+const { createCodexSessionWatcher } = require('./services/codex-session-watch');
+const {
+  createTelegramApprovalService,
+} = require('./services/telegram-approval');
 const { bootstrapApp } = require('./app/bootstrap');
 const { initializeApp, installShutdownHooks } = require('./app/lifecycle');
 const { registerCommands } = require('./app/register-commands');
@@ -145,6 +158,11 @@ const { registerHandlers } = require('./app/register-handlers');
 const { buildMainMenuKeyboard } = require('./commands/menu-keyboard');
 
 installLogTimestamps();
+
+const LOCKED_AGENT = isKnownAgent(process.env.AIPAL_LOCKED_AGENT)
+  ? normalizeAgent(process.env.AIPAL_LOCKED_AGENT)
+  : '';
+const DEFAULT_AGENT = LOCKED_AGENT || AGENT_CODEX;
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 if (!BOT_TOKEN) {
@@ -175,11 +193,13 @@ if (allowedUsers.size > 0) {
   );
 }
 
-const appState = createAppState({ defaultAgent: AGENT_CODEX });
+const appState = createAppState({ defaultAgent: DEFAULT_AGENT });
 const { queues, threadTurns, lastScriptOutputs } = appState;
 let {
   threads,
   threadsPersist,
+  activeTurns,
+  activeTurnsPersist,
   agentOverrides,
   agentOverridesPersist,
   projectOverrides,
@@ -189,10 +209,11 @@ let {
 const SCRIPT_CONTEXT_MAX_CHARS = 8000;
 let memoryEventsSinceCurate = 0;
 let globalThinking;
-let globalAgent = AGENT_CODEX;
+let globalAgent = DEFAULT_AGENT;
 let globalModels = {};
 let globalAgentCwd = AGENT_CWD;
 let cronDefaultChatId = null;
+const activeTurnFollowers = new Map();
 const enqueue = createEnqueue(queues);
 
 const scriptManager = new ScriptManager(SCRIPTS_DIR);
@@ -253,16 +274,22 @@ const memoryService = createMemoryService({
   },
 });
 const { buildBootstrapContext, captureMemoryEvent, extractMemoryText } = memoryService;
+const geminiAcpRunner = createGeminiAcpRunner({
+  timeoutMs: AGENT_TIMEOUT_MS,
+});
 
 const agentRunner = createAgentRunner({
   agentMaxBuffer: AGENT_MAX_BUFFER,
   agentTimeoutMs: AGENT_TIMEOUT_MS,
   buildBootstrapContext,
+  buildGeminiPrompt,
   buildMemoryRetrievalContext,
   buildPrompt,
   buildSharedSessionPrompt,
   codexApprovalMode: CODEX_APPROVAL_MODE,
   codexSandboxMode: CODEX_SANDBOX_MODE,
+  clearActiveTurn: (chatId, topicId, agentId) =>
+    clearActiveTurnForAgent(chatId, topicId, agentId),
   documentDir: DOCUMENT_DIR,
   execLocal,
   execLocalWithPty,
@@ -270,6 +297,8 @@ const agentRunner = createAgentRunner({
   findNewestSessionDiff,
   getAgent,
   getAgentLabel,
+  getActiveTurn: (chatId, topicId, agentId) =>
+    getActiveTurnForAgent(chatId, topicId, agentId),
   getGlobalAgent: () => globalAgent,
   getGlobalModels: () => globalModels,
   getGlobalThinking: () => globalThinking,
@@ -278,16 +307,20 @@ const agentRunner = createAgentRunner({
   getLocalCodexSessionMeta,
   getLocalCodexSessionTurnState,
   listLocalCodexSessions,
+  runGeminiAcpTurn: (options) => geminiAcpRunner.runTurn(options),
   listLocalCodexSessionsSince,
   listSqliteCodexThreads,
   imageDir: IMAGE_DIR,
   memoryRetrievalLimit: MEMORY_RETRIEVAL_LIMIT,
+  persistActiveTurns,
   persistProjectOverrides,
   persistThreads,
   prefixTextWithTimestamp,
   resolveAgentProjectCwd,
   resolveEffectiveAgentId,
   resolveThreadId,
+  setActiveTurn: (chatId, topicId, agentId, value) =>
+    setActiveTurnForAgent(chatId, topicId, agentId, value),
   setProjectForAgent,
   shellQuote,
   threadTurns,
@@ -317,6 +350,8 @@ const {
   sendResponseToChat,
   startTyping,
 } = telegramReplyService;
+const telegramApprovalService = createTelegramApprovalService({ bot });
+telegramApprovalService.registerHandlers();
 
 const handleCronTrigger = createCronHandler({
   bot,
@@ -337,6 +372,13 @@ function persistThreads() {
     .catch(() => {})
     .then(() => saveThreads(threads));
   return threadsPersist;
+}
+
+function persistActiveTurns() {
+  activeTurnsPersist = activeTurnsPersist
+    .catch(() => {})
+    .then(() => saveActiveTurns(activeTurns));
+  return activeTurnsPersist;
 }
 
 function persistAgentOverrides() {
@@ -360,7 +402,22 @@ function persistMemory(task) {
   return memoryPersist;
 }
 
+function getActiveTurnForAgent(chatId, topicId, agentId) {
+  return getActiveTurn(activeTurns, chatId, topicId, agentId);
+}
+
+function setActiveTurnForAgent(chatId, topicId, agentId, value) {
+  return setActiveTurn(activeTurns, chatId, topicId, agentId, value);
+}
+
+function clearActiveTurnForAgent(chatId, topicId, agentId) {
+  return clearActiveTurn(activeTurns, chatId, topicId, agentId);
+}
+
 function resolveEffectiveAgentId(chatId, topicId, overrideAgentId) {
+  if (LOCKED_AGENT) {
+    return LOCKED_AGENT;
+  }
   return (
     overrideAgentId ||
     getAgentOverride(agentOverrides, chatId, topicId) ||
@@ -417,7 +474,11 @@ let cronScheduler = null;
 
 async function hydrateGlobalSettings() {
   const config = await readConfig();
-  if (config.agent) globalAgent = normalizeAgent(config.agent);
+  if (LOCKED_AGENT) {
+    globalAgent = LOCKED_AGENT;
+  } else if (config.agent) {
+    globalAgent = normalizeAgent(config.agent);
+  }
   if (config.models) globalModels = { ...config.models };
   if (typeof config.agentCwd === 'string' && config.agentCwd.trim()) {
     globalAgentCwd = config.agentCwd;
@@ -429,17 +490,96 @@ function getTopicId(ctx) {
   return ctx?.message?.message_thread_id;
 }
 
+async function followActiveTurn(ctx, options = {}) {
+  const chatId = ctx?.chat?.id;
+  const topicId = getTopicId(ctx);
+  const agentId = String(options.agentId || resolveEffectiveAgentId(chatId, topicId)).trim();
+  if (!chatId || agentId !== 'codex') {
+    await ctx.reply('No hay un turno activo para esta sesión.');
+    return false;
+  }
+
+  const activeTurn = getActiveTurnForAgent(chatId, topicId, agentId);
+  if (!activeTurn || activeTurn.status !== 'running' || !activeTurn.threadId) {
+    await ctx.reply('No hay un turno activo para esta sesión.');
+    return false;
+  }
+
+  const followerKey = buildThreadKey(chatId, normalizeTopicId(topicId), agentId);
+  const existingFollower = activeTurnFollowers.get(followerKey);
+  if (existingFollower) {
+    await ctx.reply('Ya estoy siguiendo esta sesión activa.');
+    return true;
+  }
+
+  const progress = await beginProgress(ctx, 'Codex: siguiendo sesión activa...');
+  const watcher = createCodexSessionWatcher({
+    threadId: activeTurn.threadId,
+    sessionFilePath: activeTurn.sessionFilePath,
+    startedAt: activeTurn.startedAt,
+    getLocalCodexSessionMeta,
+    getLocalCodexSessionTurnState,
+    onProgressEvent: async (event) => {
+      if (event?.timestamp) {
+        setActiveTurnForAgent(chatId, topicId, agentId, {
+          ...activeTurn,
+          lastObservedTimestamp: event.timestamp,
+        });
+        persistActiveTurns().catch((err) =>
+          console.warn('Failed to persist followed active turn progress:', err)
+        );
+      }
+      await progress.updateEvent(event);
+    },
+    onCompleted: async ({ assistantMessage, assistantTimestamp }) => {
+      activeTurnFollowers.delete(followerKey);
+      clearActiveTurnForAgent(chatId, topicId, agentId);
+      persistActiveTurns().catch((err) =>
+        console.warn('Failed to clear completed active turn:', err)
+      );
+      await progress.finish();
+      const finalText = String(assistantMessage || '').trim();
+      if (finalText) {
+        await replyWithResponse(ctx, finalText);
+        return;
+      }
+      const fallbackTs = assistantTimestamp ? ` (${assistantTimestamp})` : '';
+      await ctx.reply(`La sesión terminó${fallbackTs}.`);
+    },
+    onError: async (event) => {
+      activeTurnFollowers.delete(followerKey);
+      await progress.fail(
+        String(event?.message || 'Codex: error siguiendo la sesión activa.')
+      );
+    },
+  });
+
+  activeTurnFollowers.set(followerKey, watcher);
+  try {
+    await watcher.start();
+    return true;
+  } catch (err) {
+    activeTurnFollowers.delete(followerKey);
+    await progress.fail('Codex: error siguiendo la sesión activa.');
+    throw err;
+  }
+}
+
 function setThreadForAgent(chatId, topicId, agentId, threadId) {
   const key = buildThreadKey(chatId, normalizeTopicId(topicId), agentId);
   threads.set(key, String(threadId || '').trim());
 }
 
 bot.start(async (ctx) => {
+  const replyOptions =
+    LOCKED_AGENT === 'opencode' || LOCKED_AGENT === 'gemini'
+      ? undefined
+      : {
+          reply_markup: buildMainMenuKeyboard({ includeFollow: false }),
+        };
   await ctx.reply(
     `Ready. Send a message and I will pass it to ${getAgentLabel(globalAgent)}.`,
-    {
-      reply_markup: buildMainMenuKeyboard(),
-    }
+    replyOptions
   );
 });
 registerCommands({
@@ -466,6 +606,8 @@ registerCommands({
   getAgentLabel,
   getAgentOverride: (chatId, topicId) =>
     getAgentOverride(agentOverrides, chatId, topicId),
+  getActiveTurn: (chatId, topicId, agentId) =>
+    getActiveTurnForAgent(chatId, topicId, agentId),
   getCronDefaultChatId: () => cronDefaultChatId,
   getCronScheduler: () => cronScheduler,
   getGlobalAgent: () => globalAgent,
@@ -490,7 +632,10 @@ registerCommands({
   memoryRetrievalLimit: MEMORY_RETRIEVAL_LIMIT,
   normalizeAgent,
   normalizeTopicId,
+  lockedAgentId: LOCKED_AGENT,
+  followActiveTurn,
   persistAgentOverrides,
+  persistActiveTurns,
   persistMemory,
   persistProjectOverrides,
   persistThreads,
@@ -508,7 +653,7 @@ registerCommands({
   setAgentOverride: (chatId, topicId, agentId) =>
     setAgentOverride(agentOverrides, chatId, topicId, agentId),
   setGlobalAgent: (value) => {
-    globalAgent = value;
+    globalAgent = LOCKED_AGENT || value;
   },
   setGlobalAgentCwd: (value) => {
     globalAgentCwd = String(value || '').trim();
@@ -560,6 +705,8 @@ registerHandlers({
   codexProgressUpdatesEnabled: CODEX_PROGRESS_UPDATES,
   beginProgress,
   renderProgressEvent,
+  requestAgentApproval: (ctx, request) =>
+    telegramApprovalService.requestApproval(ctx, request),
   startTyping,
   transcribeAudio,
 });
@@ -570,9 +717,13 @@ bootstrapApp({
     initializeApp({
       handleCronTrigger,
       hydrateGlobalSettings,
+      loadActiveTurns,
       loadAgentOverrides,
       loadProjectOverrides,
       loadThreads,
+      setActiveTurns: (value) => {
+        activeTurns = value;
+      },
       setAgentOverrides: (value) => {
         agentOverrides = value;
       },
@@ -598,6 +749,7 @@ bootstrapApp({
       getCronScheduler: () => cronScheduler,
       getPersistPromises: () => [
         threadsPersist,
+        activeTurnsPersist,
         agentOverridesPersist,
         projectOverridesPersist,
         memoryPersist,

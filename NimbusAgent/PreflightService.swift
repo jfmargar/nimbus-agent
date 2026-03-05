@@ -11,17 +11,24 @@ struct PreflightReport {
 }
 
 final class PreflightService {
-    func run(settings: NimbusSettings, token: String, nodeURL: URL?, entryURL: URL?) -> PreflightReport {
+    func run(bot: NimbusBot, settings: NimbusSettings, token: String, nodeURL: URL?, entryURL: URL?) -> PreflightReport {
         var errors: [String] = []
         var warnings: [String] = []
         var details: [String] = []
-        let effectiveEnv = EnvAssembler.build(settings: settings, token: token)
+        let effectiveEnv = EnvAssembler.build(settings: settings, token: token, bot: bot)
         let effectiveCodexHome = effectiveEnv["CODEX_HOME"] ?? EnvAssembler.effectiveCodexHome()
         let defaultCodexHome = "\(NSHomeDirectory())/.codex"
+        let requiredCommand: String
+        switch bot {
+        case .codex:
+            requiredCommand = "codex"
+        case .gemini:
+            requiredCommand = "gemini"
+        }
 
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedToken.isEmpty {
-            errors.append("Falta TELEGRAM_BOT_TOKEN. Configúralo en Ajustes > General.")
+            errors.append("Falta TELEGRAM_BOT_TOKEN para \(bot.label). Configúralo en Ajustes > General.")
         }
 
         errors.append(contentsOf: settings.validationErrors())
@@ -52,21 +59,42 @@ final class PreflightService {
             errors.append("No se pudo resolver la ruta del entrypoint de Aipal.")
         }
 
-        if let codexPath = ShellResolver.resolveCommandPath("codex") {
-            details.append("codex: \(codexPath)")
-            if let version = Self.readCommandOutput(executablePath: codexPath, arguments: ["--version"]) {
-                details.append("codex version: \(version)")
+        if let commandPath = ShellResolver.resolveCommandPath(requiredCommand) {
+            details.append("\(requiredCommand): \(commandPath)")
+            if let version = Self.readCommandOutput(
+                executablePath: commandPath,
+                arguments: ["--version"],
+                environment: effectiveEnv
+            ) {
+                details.append("\(requiredCommand) version: \(version)")
             }
         } else {
-            errors.append("No se encontró `codex` en PATH. Si lo tienes instalado, reinicia Nimbus o verifica tu PATH en zsh.")
+            errors.append("No se encontró `\(requiredCommand)` en PATH. Si lo tienes instalado, reinicia Nimbus o verifica tu PATH en zsh.")
         }
 
-        details.append("Codex integration: SDK")
-        details.append("CODEX_HOME: \(effectiveCodexHome)")
-        details.append("Codex approval: \(settings.codexApprovalMode)")
-        details.append("Codex sandbox: \(settings.codexSandboxMode)")
-        details.append("Codex progress updates: \(settings.codexProgressUpdates ? "enabled" : "disabled")")
-        if effectiveCodexHome != defaultCodexHome {
+        details.append("Locked agent: \(bot.lockedAgentId)")
+        if bot == .codex {
+            details.append("XDG_CONFIG_HOME: \(effectiveEnv["XDG_CONFIG_HOME"] ?? "(unset)")")
+            details.append("Codex integration: SDK")
+            details.append("CODEX_HOME: \(effectiveCodexHome)")
+            details.append("Codex approval: \(settings.codexApprovalMode)")
+            details.append("Codex sandbox: \(settings.codexSandboxMode)")
+            details.append("Codex progress updates: \(settings.codexProgressUpdates ? "enabled" : "disabled")")
+        } else {
+            details.append("AIPAL_STATE_HOME: \(effectiveEnv["AIPAL_STATE_HOME"] ?? "(unset)")")
+            details.append("XDG_CONFIG_HOME: \(effectiveEnv["XDG_CONFIG_HOME"] ?? "(unset)")")
+            details.append("Secondary bot runtime: CLI")
+            details.append("GLAB_CONFIG_DIR: \(effectiveEnv["GLAB_CONFIG_DIR"] ?? "(unset)")")
+            details.append("SSH_AUTH_SOCK: \((effectiveEnv["SSH_AUTH_SOCK"]?.isEmpty == false) ? "present" : "missing")")
+            Self.appendGlabDiagnostics(
+                warnings: &warnings,
+                details: &details,
+                environment: effectiveEnv,
+                workingDirectory: effectiveEnv["AIPAL_AGENT_CWD"],
+                botLabel: bot.label
+            )
+        }
+        if bot == .codex, effectiveCodexHome != defaultCodexHome {
             warnings.append("CODEX_HOME efectivo no apunta a \(defaultCodexHome). Nimbus compartirá sesiones con esa ruta alternativa.")
         }
 
@@ -86,15 +114,159 @@ final class PreflightService {
         return PreflightReport(errors: errors, warnings: warnings, details: details)
     }
 
-    private static func readCommandOutput(executablePath: String, arguments: [String]) -> String? {
+    private static func appendGlabDiagnostics(
+        warnings: inout [String],
+        details: inout [String],
+        environment: [String: String],
+        workingDirectory: String?,
+        botLabel: String
+    ) {
+        guard let glabPath = ShellResolver.resolveCommandPath("glab") else {
+            warnings.append("No se encontró `glab` en PATH. El acceso a GitLab desde \(botLabel) puede fallar.")
+            return
+        }
+
+        details.append("glab: \(glabPath)")
+        if let version = readCommandOutput(
+            executablePath: glabPath,
+            arguments: ["--version"],
+            environment: environment
+        ) {
+            details.append("glab version: \(version)")
+        }
+
+        let gitlabHost = resolveGitLabHost(
+            workingDirectory: workingDirectory,
+            environment: environment
+        )
+        if let gitlabHost {
+            details.append("GitLab host: \(gitlabHost)")
+        } else {
+            details.append("GitLab host: (no detectado)")
+        }
+
+        var arguments = ["auth", "status"]
+        if let gitlabHost {
+            arguments.append(contentsOf: ["--hostname", gitlabHost])
+        }
+
+        guard let result = runCommand(
+            executablePath: glabPath,
+            arguments: arguments,
+            environment: environment,
+            currentDirectory: workingDirectory
+        ) else {
+            warnings.append("No se pudo ejecutar `glab auth status` con el entorno de \(botLabel).")
+            return
+        }
+
+        let summary = summarizeAuthStatus(result.stdout, fallback: result.stderr)
+        if result.terminationStatus == 0 {
+            details.append("glab auth status: \(summary)")
+        } else {
+            warnings.append("`glab auth status` falló para \(botLabel): \(summary)")
+            details.append("glab auth status raw: \(summary)")
+        }
+    }
+
+    private static func resolveGitLabHost(
+        workingDirectory: String?,
+        environment: [String: String]
+    ) -> String? {
+        guard let workingDirectory = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !workingDirectory.isEmpty else {
+            return nil
+        }
+
+        guard let result = runCommand(
+            executablePath: "/usr/bin/git",
+            arguments: ["config", "--get-regexp", #"^remote\..*\.url$"#],
+            environment: environment,
+            currentDirectory: workingDirectory
+        ), result.terminationStatus == 0 else {
+            return nil
+        }
+
+        let hosts = result.stdout
+            .split(whereSeparator: \.isNewline)
+            .compactMap { line -> String? in
+                let parts = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+                guard parts.count == 2 else { return nil }
+                return parseHost(fromRemoteURL: String(parts[1]))
+            }
+
+        return hosts.first(where: { $0.caseInsensitiveCompare("github.com") != .orderedSame })
+    }
+
+    private static func parseHost(fromRemoteURL remoteURL: String) -> String? {
+        let trimmed = remoteURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let components = URLComponents(string: trimmed), let host = components.host, !host.isEmpty {
+            return host
+        }
+
+        if !trimmed.contains("://"), let atIndex = trimmed.lastIndex(of: "@") {
+            let suffix = trimmed[trimmed.index(after: atIndex)...]
+            let host = suffix.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: true).first
+                ?? suffix.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true).first
+            if let host, !host.isEmpty {
+                return String(host)
+            }
+        }
+
+        return nil
+    }
+
+    private static func summarizeAuthStatus(_ stdout: String, fallback stderr: String) -> String {
+        let source = stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? stderr
+            : stdout
+        let lines = source
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return lines.first ?? "sin salida"
+    }
+
+    private static func readCommandOutput(
+        executablePath: String,
+        arguments: [String],
+        environment: [String: String],
+        currentDirectory: String? = nil
+    ) -> String? {
+        guard let result = runCommand(
+            executablePath: executablePath,
+            arguments: arguments,
+            environment: environment,
+            currentDirectory: currentDirectory
+        ), result.terminationStatus == 0 else {
+            return nil
+        }
+
+        let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return output.isEmpty ? nil : output
+    }
+
+    private static func runCommand(
+        executablePath: String,
+        arguments: [String],
+        environment: [String: String],
+        currentDirectory: String? = nil
+    ) -> CommandResult? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)
         process.arguments = arguments
-        process.environment = ["PATH": ShellResolver.mergedPathValue()]
+        process.environment = environment
+        if let currentDirectory,
+           !currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            process.currentDirectoryURL = URL(fileURLWithPath: currentDirectory, isDirectory: true)
+        }
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
 
         do {
             try process.run()
@@ -103,12 +275,24 @@ final class PreflightService {
             return nil
         }
 
-        guard process.terminationStatus == 0 else {
-            return nil
-        }
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return output.isEmpty ? nil : output
+        let stdout = String(
+            decoding: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        let stderr = String(
+            decoding: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        return CommandResult(
+            terminationStatus: process.terminationStatus,
+            stdout: stdout,
+            stderr: stderr
+        )
     }
+}
+
+private struct CommandResult {
+    let terminationStatus: Int32
+    let stdout: String
+    let stderr: String
 }
