@@ -355,7 +355,14 @@ final class NimbusAppModel: ObservableObject {
             issue: issue,
             actionLabel: "Codex"
         )
-        runDashboardCodexSession(prompt, for: issue, actionID: "codex", actionLabel: "Codex")
+        let safePrompt = prompt.replacingOccurrences(of: "'", with: "'\\''")
+        let command = renderTemplate(
+            settings.dashboardCodexCommandTemplate,
+            issue: issue,
+            actionLabel: "Codex",
+            extraValues: ["codex_prompt": "'\(safePrompt)'"]
+        )
+        runDashboardCommand(command, for: issue, actionID: "codex", actionLabel: "Codex")
     }
 
     func runAutomation(_ action: DashboardAutomationAction, for issue: DashboardIssue) {
@@ -496,10 +503,6 @@ final class NimbusAppModel: ObservableObject {
         Bundle.main.resourceURL?.appendingPathComponent("aipal/src/index.js", isDirectory: false)
     }
 
-    private func bundledDashboardCodexRunnerURL() -> URL? {
-        Bundle.main.resourceURL?.appendingPathComponent("aipal/src/run-dashboard-codex.js", isDirectory: false)
-    }
-
     private func appendLog(_ chunk: String, for bot: NimbusBot) {
         let lines = chunk
             .split(whereSeparator: \.isNewline)
@@ -566,63 +569,6 @@ final class NimbusAppModel: ObservableObject {
         }
     }
 
-    private func runDashboardCodexSession(
-        _ prompt: String,
-        for issue: DashboardIssue,
-        actionID: String,
-        actionLabel: String
-    ) {
-        let key = dashboardActionKey(issue: issue, actionID: actionID)
-        guard let localPath = issue.localPath, !localPath.isEmpty else {
-            dashboardActionStatuses[key] = .failed("No hay checkout local resuelto para este repo.")
-            appendDashboardLog("[\(issue.repository)#\(issue.number)] \(actionLabel) omitido: no hay checkout local.")
-            return
-        }
-        guard let nodeURL = bundledNodeURL(),
-              let runnerURL = bundledDashboardCodexRunnerURL() else {
-            dashboardActionStatuses[key] = .failed("No se encontró el runner embebido de Codex.")
-            appendDashboardLog("[\(issue.repository)#\(issue.number)] \(actionLabel) omitido: falta el runner embebido.")
-            return
-        }
-
-        dashboardActionStatuses[key] = .running
-        appendDashboardLog("[\(issue.repository)#\(issue.number)] \(actionLabel) -> sesión visible compatible con Codex App")
-
-        let currentSettings = settings
-        DispatchQueue.global(qos: .userInitiated).async {
-            let environment = EnvAssembler.buildDashboardEnvironment(settings: currentSettings)
-            let currentDirectoryURL = URL(fileURLWithPath: localPath, isDirectory: true)
-
-            do {
-                let result = try CommandExecutor.runProcess(
-                    executablePath: nodeURL.path,
-                    arguments: [runnerURL.path, localPath, prompt],
-                    environment: environment,
-                    currentDirectoryURL: currentDirectoryURL
-                ) { chunk in
-                    Task { @MainActor in
-                        self.appendDashboardLog("[\(issue.repository)#\(issue.number)] \(chunk)")
-                    }
-                }
-
-                Task { @MainActor in
-                    if result.terminationStatus == 0 {
-                        self.dashboardActionStatuses[key] = .succeeded
-                        self.appendDashboardLog("[\(issue.repository)#\(issue.number)] \(actionLabel) completado.")
-                    } else {
-                        let message = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                        self.dashboardActionStatuses[key] = .failed(message.isEmpty ? "exit \(result.terminationStatus)" : message)
-                        self.appendDashboardLog("[\(issue.repository)#\(issue.number)] \(actionLabel) falló con exit \(result.terminationStatus).")
-                    }
-                }
-            } catch {
-                Task { @MainActor in
-                    self.dashboardActionStatuses[key] = .failed(error.localizedDescription)
-                    self.appendDashboardLog("[\(issue.repository)#\(issue.number)] \(actionLabel) no pudo arrancar: \(error.localizedDescription)")
-                }
-            }
-        }
-    }
 
     private func appendDashboardLog(_ chunk: String) {
         let lines = chunk
